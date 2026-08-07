@@ -1,0 +1,14 @@
+pi-cindy
+Copyright 2026 midmirror
+
+This product includes code and protocol specifications derived from the
+Cindy project (https://github.com/makecindy/cindy), licensed under the
+Apache License 2.0. Specifically:
+
+- `src/ownership.ts` is derived from the desktop app's ownership module
+  (single-owner arbitration over SQLite).
+- Device-link protocol alignment (envelope frames, WS authentication,
+  push topics, invoke channel shapes) follows the `packages/device-link`
+  and `packages/maker-shared` packages.
+- Protocol constants (e.g. `SERVER_CAPABILITY_NOTIFY`) follow the
+  `cindy-protocol` submodule of the upstream repository.

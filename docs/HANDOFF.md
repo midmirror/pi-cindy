@@ -1,0 +1,231 @@
+# pi-cindy HANDOFF
+
+> 2026-08-07 · 状态：**v0.5.0（已打 tag）**：会话路由 + 快速接管（手机消息路由到会话宿主、
+> 定向接管、DB 邮箱、死宿主心跳清理）；冒烟 218 断言 + 三进程集成握手全绿，双门禁绿。
+> v0.3.0 已打 tag（commit `d218d60`）。v0.4.0 未打 tag（技术债清零 + 旧 JSON 清理）。
+> P3 双进程真机验证 ✅（2026-08-07，见已完成块）。
+
+## 工作背景
+
+- **项目目标**：Pi extension 模拟 Cindy Desktop 被控端（device-link sync），使 Cindy 手机端可浏览/操作 Pi 会话（会话列表、选模型、发消息、停止/转向、压缩等）。
+- **关键决策**：模拟 Desktop（不改手机端）；SQLite 存储（v0.3.0 起，node:sqlite，此前为 JSON 文件存储）；PKCE 登录；invoke allowlist 精简；落库与权威推送只在 tracker 完成；协议契约以手机端消费方源码为准（详见 `AGENTS.md` Must-know，勿推翻）。
+- **与上游对应关系**：参考实现 = cindy 开源仓库（desktop 端 `apps/desktop` + `packages/device-link` + `packages/maker-shared`）；手机端契约以 mobile 侧 normalize/validate 函数为准。端点、信封格式、hello、WS 路径、push 频道名均对齐（参考仓本机路径不固定，见下文端点查找方法）。
+- **文档分工**：本文件 = 交付状态与待办；`EXPERIENCE.md` = 踩坑与迭代经验 + 问题记录附录（唯一源，#1-25 + 表 #1-56）；`CHANGELOG.md` = 版本化变更流水。
+
+## 已完成
+
+### 2026-08-05 · 扩展骨架 + 登录链路
+
+- [x] pi extension 可被加载（`~/.pi/agent/extensions/pi-cindy` → symlink → 本目录）；`ws` 依赖安装
+- [x] 模块全部完成：类型定义（`src/types.ts`，从 cindy-protocol + device-link 复制核心类型）、device-link 客户端、invoke 路由（58 channel allowlist）、会话/消息/maker handlers、PKCE 登录、AES-256-GCM token 存储、JSON 会话存储（`PI_CINDY_DATA_DIR` 可覆盖）、生命周期追踪（`src/tracker.ts`）、入口（5 命令 + 2 工具）
+- [x] 端点修正（P0）：从 `config/endpoint.global.json` + `config/endpoint.json` 取真实端点；`auth.cindy.app`（global）/ `auth.cindy.com.cn`（cn）；`deviceLinkApiBaseUrl` → `wss://.../api/device-link/ws`；WS 认证改 header `Authorization: Bearer <token>`（对齐 Desktop）
+- [x] **真机登录验证通过**：Google 登录 → poll 拿 code → token 兑换 → `session.enc` 写入（23:21:21）→ relay 握手 → hello-ack 秒回（userId 已脱敏）
+- [x] 登录链路修复：poll 错误状态不再被吞；onReady 改 connect 前挂载（不丢 hello-ack 后首批帧）；4409 同 deviceId 顶替走 30s 慢重连；登录状态持久显示（`ctx.ui.setStatus` + `/cindy-status` 展示 userId/deviceId）
+- [x] 登录方式：`/cindy-login [cn|global] [google|apple|email]`；未指定且无 UI 默认 google > social[0] > email；email 验证码流程（request-code → verify-code）；`select_account` 二次选择；`binding_required` 明确报错提示用 Desktop；provider 不可用抛 `PROVIDER_UNAVAILABLE` 不静默回落
+
+### 2026-08-06 · 评审修复第一轮（#1-19，review-swarm 对拍 105be51）
+
+- [x] P0：post-handshake 帧全丢（#1，message 监听器存活整个 socket 生命周期）；`maker:input:*` 输入队列实现（#2，pendingQueue + steeringQueueClientIds + queueAbortPending + projection 回流）；时间戳 ISO 字符串（#3）
+- [x] P1 连接生命周期：#4 stopped 标志（disconnect 生效）、#5 realm 派生、#6 single-flight + 替换前 disconnect、#7 握手 watchdog、#8 指数退避 + 401 停止重连、#9 sessions:list 位置参数 + clampLimit(20)、#10 消息 ID 游标
+- [x] P2 契约与安全：#11 订阅表 + topic 路由、#12 deepLink 对齐 desktop 路径、#13 relay-debug.log 0600 + 1MB 截断 + 真开关、#14 maker:event 死推送移除、#15 patch-meta 字段白名单、#16 logout 按 realm、#17 busy→presence-set、#18 token 威胁模型文档化、#19 单次 updateSession
+
+### 2026-08-06 · 真机问题修复（#20-29，手机同步会话列表后「选不了模型 + 发消息收不到」）
+
+- [x] get-capabilities 输出 mobile 契约形状（#20，模型从 `ctx.modelRegistry` 派生）；list-available-agents 返回 `["pi"]`（#23）
+- [x] enqueue 必失败修复（#21，`pi.sendUserMessage` 返回 void，改 try/catch，注入前 apply model/effort）
+- [x] stop/abort 改走 `ctx.abort`（#22，新模块 `src/runtime.ts` 在 session_start 捕获 ctx 动作）
+- [x] 补齐 12 个 input 通道（#27）；provider 辅助接口（#28）；会话 model 存纯 id + providerId 分离（#24 + `model_select` 事件）；createSession 默认模型回落 registry 首模型（#25）；regenerate-title 兼容对象参数（#26）；模型白名单过滤 + 去重（#29）
+- [x] **真机验证通过**：手机 enqueue "来自手机" → 落库 + agent 回复 + 会话 model 变 deepseek-v4-flash
+
+### 2026-08-06 · 测试纳入仓库管理（#30-32）
+
+- [x] `npm test`（handler 层冒烟，`PI_CINDY_DATA_DIR` mkdtemp 隔离，45 断言）+ `npm run typecheck`（strict）双门禁入库
+
+### 2026-08-06 · 评审修复第三轮（#33-56，review-swarm 对拍提交版 6e95b4c）
+
+- [x] 契约：#33 create-session 透传 mobile 预生成 id（幂等，返回 `{sessionId, agentKind, workDir}`）、#34 messages:list 恒降序、#35 messages:around / around-client-id、#36 队列投影透传 chatMessage（附件显式拒绝）、#37 消息带 clientId、#38 截断打 remoteContentTruncated、#39 totalTokens、#52 list-active 形状、#53 附件显式拒绝
+- [x] 语义：#40 session_shutdown 顺序（tracker 先归档再断开）、#41 inputStop opts（keepQueue/pauseQueue）、#42 前台会话门禁（activeId）、#43 中断语义对齐 desktop
+- [x] 可靠性/安全：#44-47 pong-miss 判死、relay-error 非致命、connEpoch 防迟到事件、token 失效停重连；#48 auth refresh single-flight + logout 代数失效；#49-50 原子写 + 路径穿越防护；#51 摘除伪造 session-tree；#54 revert 明文凭据提交；#56 测试扩至 79 断言
+- [x] 测试：79 断言（id 幂等/DESC/around/chatMessage 透传/stop opts/会话门禁/附件拒绝/中断语义/路径穿越）
+
+### 2026-08-06 · P2 编码项（端点热更新 + loopback 降级 + binding 流程，目标 v0.2.0，提交 `d30e7f0`）
+
+- [x] **端点热更新**（`src/endpoints.ts`）：登录/连接时从 Cindy CDN 拉取端点清单
+  （`https://hotfix.{cindy.app|cindy.com.cn}/cindy/endpoint.json`，实测可达），解析/校验对齐
+  参考仓 `parseClientEndpointManifest` 严格语义；全部端点消费方（auth refresh/登录/登出、
+  relay WS URL）改 `getEndpoint()` 动态读取，清单覆盖烘焙默认；拉取失败保留烘焙 + 日志不阻断
+  （extension 与 desktop 阻断语义差异见 EXPERIENCE #18）
+- [x] **RFC 8252 loopback 降级**（`src/auth/loopback.ts`）：`authDesktopCallbackUrl` 为空时
+  起随机端口 HTTP server 收回调（路径 `/auth/callback` + state 校验），换 token；托管回调保持主路径
+- [x] **binding_required 全流程**：`requestBindingCode` + `verifyBinding` 走通（契约对齐参考
+  auth-client client.ts），`/cindy-login` email 流程完整绑定交互
+- [x] 补 locale（requestEmailCode/requestBindingCode + `ui_locale`）；`src/dbg.ts` 抽共享排障日志
+- [x] **relay-error 状态化**：握手后 DEVICE_OFFLINE 等不再每帧 console.error，改 dbgLog +
+  onRelayError 回调，status line 显离线/在线（业务帧到达自动清回）；`/cindy-status` 增 Models 数
+- [x] 测试 80→113 断言（清单解析 9 用例 / CDN 覆盖与失败保留 / loopback 纯函数+端到端 / binding 请求形状）+ typecheck 绿
+
+### 2026-08-06 · P1 真机首轮（会话不落库修复 + 双实例验证）
+
+- [x] **修「手机刷新不出会话」**：tracker `session_start` 曾依赖 relay client 就绪，
+  client 未就绪时 `if (!c) return` → 当前会话永不落库 → `sessions:list "active"` 恒空。
+  改：建会话 + setActiveId 前置，push 后移判空（EXPERIENCE #22）；测试 113→119 断言
+- [x] **真机验证通过**：手机端已能拉取 `709583bd` 会话 + 打开会话页（messages:list /
+  get-pending-interactions / get-projection 到达）；双实例同 deviceId 冲突：B 顶替 A 被
+  4409、无互踢死循环（A 走 30s 慢重连）
+- [x] **发现 refresh token 家族撤销**：真实数据目录上诊断脚本与运行中进程并发 refresh
+  同一 refresh token → auth 401 INVALID_REFRESH_TOKEN，需重新登录（EXPERIENCE #23）
+
+### 2026-08-06 · P1 真机第二轮（push 复测 + 手机端常调 channel 补全）
+
+- [x] **push 复测通过（全链路）**：手机 enqueue「来自手机」→ invoke 到达（22:35:08）→
+  落库带 clientId（`mobile-mshmb2do-d8na0lsx`）→ agent 回复回流（本会话即证据）；
+  iPhone 订阅 `session:<id>` + `sessions` topic（22:34:24）正常；出站 push 不打日志，
+  手机 UI 实时收回复即证据。token 无需重登（`loggedIn:true`，上轮误杀已自愈）
+- [x] **补手机端常调 4 channel**（`src/handlers/system.ts` + `fs-browse.ts`）：
+  `maker:goal:get-status`→null、`maker:schedule:list`→[]、
+  `notification:clear-session-attention`→no-op（返回形状对齐 desktop 空态）；
+  `fs:stat-path`→expandHome+stat `{kind, resolvedPath}`（desktop device-link allowlist
+  设计上允许被控端执行）；测试 119→125 断言（EXPERIENCE #24）
+
+### 2026-08-06 · P1 收口（v0.2.0 tag）
+
+- [x] **双端 logout 后重登验证通过**：手机端 logout + pi-cindy logout 均执行，两边重新登录
+  成功（`/cindy-login global google`）；新 token 家族生效，重启后连接恢复（22:43 hello-ack
+  userId=<redacted>，iPhone 重新订阅 + 拉会话列表）
+- [x] **新代码生效验证**：重启后零 CHANNEL_NOT_ALLOWED（旧代码 22:38 报错为重启前残留），
+  `maker:schedule:list` 成功返回 []（新 router 处理）
+- [x] 打 **v0.2.0 tag**（commit `690f817`）
+
+### 2026-08-06 · 多进程共存 + SQLite 化（v0.3.0，spec: docs/specs/2026-08-06-multi-process-sqlite-design.md）
+
+- [x] 单持有者仲裁：copy desktop ownership.ts（SQLite 单行表 CAS），同数据目录多 pi
+      进程一 owner 一 standby，4409 互踢根除
+- [x] session-store JSON→SQLite（node:sqlite 零依赖，对外签名不变，handler 零改动）
+- [x] JSON→SQLite 一次性迁移（fail-open + migration_done 幂等，旧文件保留）
+- [x] 双进程集成测试（tests/multi-process.test.js）：真跨进程（spawn 两 node 子进程
+      同 db 文件）验证一 owner 一 standby、standby 在持有者存活期间不接管
+
+### 2026-08-07 · 技术债清零 + 旧 JSON 清理（v0.4.0，未打 tag）
+
+- [x] **hello-ack `serverProtocolVersion` 校验**：对齐参考 client.ts 防御性二道闸，mismatch 拒上线
+  + protocolMismatch 标志停重连（不复用 authFailed 文案）；实测 server v1 与本地一致不误伤
+- [x] **notify 能力位门禁**：`git submodule update --init cindy-protocol` 检出子模块获
+  `SERVER_CAPABILITY_NOTIFY='notify'`（参考仓 .gitmodules），client.notify 加 capability gate
+- [x] **controller 撤销/远程禁用门禁**（对齐 desktop settings-store + dispatch + index）：
+  `src/store/settings-store.ts`（remoteControlEnabled + revokedControllers，JSON 原子写 0600）；
+  link-open/subscribe/invoke 三入口门禁（REMOTE_DISABLED / ACCESS_REVOKED，link-open 撤销发
+  link-close('revoked')）；`/cindy-revoke|restore|remote` 命令 + status 显示；测试 133→147 断言
+- [x] **旧 JSON 孤儿数据清理**：确认 SQLite 已完全接管（store 零 JSON 引用 + db 承载当前会话），
+  迁移从未触发（db 非空跳过，EXPERIENCE #27）→ 27 会话/669 消息无主；用户确认后删除
+  sessions.json + messages/；数据目录仅剩 SQLite + device-id + session.enc + 日志
+
+### 2026-08-07 · P3 双进程真机验证（v0.4.0 后，5s 心跳/15s 过期/退出秒级释放）
+
+- [x] **双实例 + 手机端全流程**：A owner / B standby（`standing by — will not connect to relay`）；
+  手机设备列表恒 1 台、会话列表 2 会话；standby 会话正常落库（created = 启动时刻，与 standby 日志同秒）
+- [x] **故障切换双路径实测**：优雅退出 4.4s 接管（release→claim→hello-ack；transportStreamId 不变，
+  手机无需重连，link 无缝继承）；`kill -9` 后 14.1s 过期接管（`takeover-stale(prev pid=…)`，spec ≤15s）；
+  全程 4409 = 0
+- [x] **心跳节奏实测**：16s 墙钟 → heartbeat_at +15.03s（5s/拍 ×3），与实现参数一致；A 重启直接 standby
+  无互踢；硬杀残留 stale 行由下次接管自愈（测试收尾手动清行恢复基线，session 25 条保留）
+
+### 2026-08-07 · 会话路由 + 快速接管（v0.5.0，spec: docs/specs/2026-08-07-session-routed-handoff-design.md）
+
+- [x] **宿主标注 + 实例心跳**：`sessions.host_instance_id`（tracker session_start 写 / shutdown 清，
+      instance.ts 进程级 UUID）；`cindy_instances` 心跳表（10s 续写，随仲裁器启停）
+- [x] **路由判定**（router.ts SESSION_LOCAL 集）：host==我 → 本地 handler；host==null → NOT_FOUND；
+      host 活 → 邮箱落行 + 定向接管 + 合成投影；host 死 → 清 host/邮箱 failed + error 投影；
+      get-projection 只读合成（不落邮箱不接管）
+- [x] **定向接管**（ownership.ts）：handoffTo 写交接信号（TTL 10s）后让位停续期；目标 fastPoll
+      （默认 1s）独占认领；交接过期按 heartbeatMs 收敛；tryTakeover 认领清 handoff 字段防自损
+- [x] **DB 邮箱**（cindy_handoff_mailbox）：UNIQUE(session_id, client_id) 幂等落行；宿主接管后
+      本地重放（失败不标 consumed）；owner 15s sweep 死宿主清理 + failed 5min 清理
+- [x] **clientId 环形窗口去重**（同 (session, clientId) 重发 no-op）+ index.ts 接线（wireInvokeContext /
+      heartbeat·sweep timer / status Inst:Host）
+- [x] **测试**：冒烟 167→218 断言 + 三进程集成握手（A 让位→B 认领→B 消费注入，C 不抢）；
+      typecheck + 全部测试文件绿；v0.5.0 tag 锚定
+
+## 未完成
+
+### P1：会话路由真机验证清单（目标 v0.5.0，自动化测试已覆盖握手，真机待跑）
+
+- [ ] 双 pi 进程（不同目录）+ 同一账号登录 + 手机端：设备列表 1 台、会话列表见 2 会话
+- [ ] 手机在 B 会话发消息 → ~1-2s 内 B 接管（B 窗口 `/cindy-status` 变 owner）→ B 回复回流手机
+- [ ] 随后手机在 A 会话发消息 → 接管切回 A → 回复回流；全程无 4409（relay-debug.log grep）
+- [ ] kill -9 B → 手机在 B 会话发消息 → ~10s 内明确报错（会话无活宿主）
+- [ ] 重启 B（resume 同会话）→ 会话复活可消息
+
+### P1：真机测试（目标 v0.2.0）**✅ 已全部完成（2026-08-06）**
+
+- [x] push 复测 / 手机端常调 channel 补全 / 双端 logout 后重登 / v0.2.0 tag
+
+> apple/email 登录未单独验证（google 已通；binding/loopback 流程已单测覆盖）——如需补验放 P3。
+
+### P2：功能补全（目标 v0.2.0）
+
+- [ ] **邮箱验证码自动填充**：无 IMAP，保持手动输入（验证码邮件送达后无法自动读取）
+- [ ] ~~端点热更新~~ ✅ 2026-08-06 已完成（见已完成块）
+- [ ] ~~loopback 回调降级~~ ✅ 2026-08-06 已完成
+- [ ] ~~binding_required 流程~~ ✅ 2026-08-06 已完成
+
+### P3：进阶功能（目标 v0.3.0+）
+
+- [x] 双进程真机验证（双 pi 进程 + 手机端设备列表/会话可见性实机确认）✅ 2026-08-07（优雅退出 4.4s / kill -9 14.1s 接管，见已完成块）
+- [x] 旧 JSON 文件人工确认后清理 ✅ 2026-08-07（用户确认直接删除；SQLite 已完全接管，无需迁移）
+
+### 技术债（随版本消化）
+
+- [ ] **本地输入队列 DB 快照**（desktop issue #761）：pi-cindy 输入队列为内存态，扩展重载/进程重启即清空；
+      desktop 有 DB 持久化输入队列快照。手机端依赖 get-projection 重拉，快照化后重启不丢队列态。
+      当前为已知局限（v0.5.0 范围外）。
+- [x] notify 能力位门禁 ✅ 2026-08-07（检出 cindy-protocol 子模块获值 'notify'）
+- [x] controller 撤销/远程禁用门禁 ✅ 2026-08-07（settings-store + 三入口 + 命令）
+- [x] request-code/verify-code locale 参数 ✅（v0.2.0）
+- [x] hello-ack serverProtocolVersion 校验 ✅ 2026-08-07
+
+---
+
+## 端点查找方法
+
+```bash
+# 方法1：Cindy 源码中的 dev 配置
+cat ~/Documents/Code/Playground/cindy/config/endpoint.global.json
+
+# 方法2：查找 Cindy Desktop 本地缓存
+find ~/Library/Application\ Support -path "*/cindy/*" -name "*.json" 2>/dev/null | head -20
+find ~/.config -path "*/cindy/*" -name "*.json" 2>/dev/null | head -20
+
+# 方法3：从 Cindy Desktop 运行日志找 endpoint manifest URL
+grep -r "endpoint" ~/Library/Application\ Support/cindy/logs/ 2>/dev/null | head -5
+```
+
+---
+
+## 文件索引
+
+```
+~/.pi/agent/extensions/pi-cindy/          # symlink
+~/.agents/agent-configs/pi/extensions/pi-cindy/  # 实际路径
+├── AGENTS.md             # 规范：Commands / Must-know / HANDOFF 维护规范
+├── index.ts              # 入口：5 命令 + 2 工具
+├── package.json          # scripts: test / typecheck
+├── tsconfig.json         # strict + NodeNext
+├── tests/smoke.test.js   # 79 断言冒烟测试（npm test）
+├── docs/AGENTS.md → 见仓库根
+├── docs/DESIGN.md        # 设计方案（架构/协议/端点/数据流）
+├── docs/HANDOFF.md       # 本文件 — 交付状态（工作背景/已完成/未完成）
+├── docs/CHANGELOG.md     # 版本化变更记录
+├── docs/EXPERIENCE.md    # 踩坑与迭代经验 + 问题记录附录（唯一源）
+└── src/
+    ├── types.ts          # ← 端点烘焙默认在这里（DEFAULT_ENDPOINTS，生效值以清单覆盖为准）
+    ├── endpoints.ts      # ← 端点热更新：CDN 清单解析 + 动态 getEndpoint
+    ├── dbg.ts            # ← 共享排障日志（relay-debug.log）
+    ├── runtime.ts        # Pi 运行态快照（ctx 能力捕获）
+    ├── tracker.ts
+    ├── auth/auth-client.ts
+    ├── auth/loopback.ts  # ← RFC 8252 loopback 回调（callbackUrl 为空时的登录回落）
+    ├── device-link/client.ts
+    ├── store/token-store.ts
+    ├── store/session-store.ts
+    └── handlers/*.ts
+```
