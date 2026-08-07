@@ -77,4 +77,4 @@ PI_CINDY_DATA_DIR=/tmp/cindy-test npx pi -e . -c "/cindy-login global"
 - `docs/CHANGELOG.md` — 版本化变更记录（版本用 git tag/commit 锚定；规划不重复，见 HANDOFF 未完成块）
 - `docs/EXPERIENCE.md` — 踩坑与迭代经验 + 问题记录附录（唯一源，编号 #1-17 + 表 #1-56；改协议/契约/链路前必读）
 - `docs/DESIGN.md` — 设计方案（架构、协议、端点、数据流）
-- `docs/pi-remaining-work.md` — **遗留文件**：内容属 pi-live/sandbox 分支，非本项目文档，勿据此决策
+- `LICENSE` / `NOTICE` — Apache-2.0 与上游派生声明（makecindy/cindy）；`README.md` — 用户入口文档
