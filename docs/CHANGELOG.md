@@ -6,6 +6,7 @@
 
 ### Added
 
+- **已发布 npm**：`pi-cindy@0.5.1` 公开（`npm view` 可见，tarball 108 文件）；pi.dev 包市场自动抓取（`pi-package` keyword）；本地验证 `pi -e npm:pi-cindy` 安装加载正常（与 symlink 本地版同名工具冲突属预期，正式安装前需移除旧链接）
 - `LICENSE`（Apache-2.0）+ `NOTICE`（上游 makecindy/cindy 派生声明）
 - `README.md`（安装/使用/开发/架构/已知限制）、`.github/workflows/ci.yml`（Node 22：npm ci + test + typecheck）
 - `.gitignore`（node_modules / *.log / .pi-loop.json.lock）
