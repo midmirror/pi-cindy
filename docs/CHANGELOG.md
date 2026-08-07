@@ -2,6 +2,28 @@
 
 版本锚定 git tag：`v0.1.0`（含 pi-cindy 全量代码 + 文档修正的完整可复核快照）。规划不在此记录（见 HANDOFF 未完成块）。
 
+## [Unreleased] — 2026-08-07 · 开源发布准备
+
+### Added
+
+- `LICENSE`（Apache-2.0）+ `NOTICE`（上游 makecindy/cindy 派生声明）
+- `README.md`（安装/使用/开发/架构/已知限制）、`.github/workflows/ci.yml`（Node 22：npm ci + test + typecheck）
+- `.gitignore`（node_modules / *.log / .pi-loop.json.lock）
+
+### Changed
+
+- package.json：去 `private`，补 `license` / `author` / `repository` 字段
+- 独立仓库化：`git init` 新仓（fresh history，不带旧仓含明文凭据历史），`~/.agents` 改为子模块引用（gitlink）；提交者信息固定 `midmirror <midmirror@live.com>`
+- 移除 `docs/pi-remaining-work.md`（遗留文件，属 pi-live/sandbox 分支）；AGENTS.md 引用同步清理
+
+### Removed
+
+- `docs/pi-remaining-work.md`（遗留文件，非本项目文档）
+
+### Security
+
+- HANDOFF 内嵌真实 userId 脱敏（`<redacted>`）
+
 ## [0.5.1] — 2026-08-07 · review-swarm 四审 H/M 修复
 
 ### Fixed
