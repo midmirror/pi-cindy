@@ -9,6 +9,7 @@
 - `LICENSE`（Apache-2.0）+ `NOTICE`（上游 makecindy/cindy 派生声明）
 - `README.md`（安装/使用/开发/架构/已知限制）、`.github/workflows/ci.yml`（Node 22：npm ci + test + typecheck）
 - `.gitignore`（node_modules / *.log / .pi-loop.json.lock）
+- **npm 发布管线**：`tsconfig.build.json`（tsc 编译 dist + d.ts + sourcemap）、`npm run build`、`prepublishOnly` 门禁（build + test + typecheck）、`keywords: ["pi-package"]`、`files` 白名单、`peerDependencies`（pi-coding-agent / typebox，不 bundle）、manifest 指向 `./dist/index.js`；`npm pack` 验证 108 文件 / 222.9 kB，dist 版注册 10 项与源码版一致
 
 ### Changed
 

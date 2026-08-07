@@ -18,6 +18,10 @@
 依赖 **Node ≥ 22.23**（使用内置 `node:sqlite`）。作为 pi extension 安装：
 
 ```sh
+# 从 pi.dev 包市场（npm）
+pi install npm:pi-cindy
+
+# 或从源码
 git clone git@github.com:midmirror/pi-cindy.git
 cd pi-cindy
 bash install.sh                    # npm install --omit=dev
