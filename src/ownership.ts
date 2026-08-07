@@ -409,11 +409,22 @@ export class DeviceLinkOwnershipArbiter {
       // 交接信号已过期：用 heartbeatMs 而非 staleMs 放宽陈旧判定（交接失败尽快收敛，
       // 消除 TTL(10s)→stale(15s) 死窗——目标没来认领不能让下一任接管等到 staleMs）
       const handoffExpired = row.handoffTo != null && row.handoffExpiresAt != null && row.handoffExpiresAt <= now;
-      const staleForTakeover = handoffExpired
-        ? now - row.heartbeatAt > this.opts.heartbeatMs
-        : now - row.heartbeatAt > this.opts.staleMs;
+      // 同进程残留租约（扩展热重载泄漏的旧仲裁器）：ownerPid 是本进程 pid 但 ownerId
+      // 不是自己 → 上一模块实例的幽灵租约。无有效交接信号即可立即接管，不必等 staleMs
+      // —— 幽灵会持续续期，等 staleMs 永远等不到，导致新实例永久 standby（真机复现）。
+      // 配合进程级仲裁器注册表（registerProcessArbiter 后进者 dispose 先进者）只有
+      // 一个活仲裁器，幽灵已被停表，本路径不存在互抢死循环。
+      const sameProcessLease = row.ownerPid === process.pid;
+      const handoffFresh = row.handoffTo != null && row.handoffExpiresAt != null && row.handoffExpiresAt > now;
+      const staleForTakeover = handoffFresh
+        ? false
+        : sameProcessLease
+          ? true
+          : handoffExpired
+            ? now - row.heartbeatAt > this.opts.heartbeatMs
+            : now - row.heartbeatAt > this.opts.staleMs;
       if (staleForTakeover) {
-        // 持有者失效(卡死 / 崩溃 / 断电);CAS 保证多个被动实例只有一个接管成功
+        // 持有者失效(卡死 / 崩溃 / 断电 / 同进程重载泄漏);CAS 保证多个被动实例只有一个接管成功
         const takeoverPromise = store.tryTakeover(
           { ownerId: row.ownerId, heartbeatAt: row.heartbeatAt },
           id,
@@ -701,4 +712,59 @@ export function createSqliteOwnershipStore(db: {
       return Number(r.changes) > 0;
     },
   };
+}
+
+// ─── 进程级仲裁器注册表（扩展热重载泄漏根治）──────────────────────────────────
+//
+// 问题：pi 扩展热重载（/reload / 会话切换重建 extension runner）会重执行模块，但旧模块
+// 实例的定时器不保证被清理——旧仲裁器会持续续期所有权行，新模块的新仲裁器看到
+// 「同 pid 的幽灵租约」永久 standby（真机复现：9+ 泄漏仲裁器同进程共存）。
+//
+// 方案：进程级注册表（globalThis，跨模块实例存活）。新模块 startArbiter 时先
+// takeOverProcessArbiter 取走并 dispose 旧 bundle（停旧仲裁器 + 旧定时器），再注册
+// 自己的 bundle。全局只有一个活仲裁器，配合 runTick 的 sameProcessLease 立即接管，
+// 泄漏无法累积、幽灵无法互抢。跨进程互斥仍由 SQLite 单行 CAS 保证（注册表按进程隔离）。
+
+export interface ProcessArbiterBundle {
+  arbiter: DeviceLinkOwnershipArbiter;
+  /** 停掉旧实例的全部定时器（仲裁器 + 宿主侧 sweep/心跳）；不关 DB（新实例还要用）。 */
+  dispose: () => Promise<void>;
+}
+
+const PROCESS_ARBITER_REGISTRY_KEY = '__piCindyOwnershipArbiterRegistry';
+
+function processArbiterRegistry(): Map<string, ProcessArbiterBundle> {
+  const g = globalThis as Record<string, unknown>;
+  let registry = g[PROCESS_ARBITER_REGISTRY_KEY] as Map<string, ProcessArbiterBundle> | undefined;
+  if (!registry) {
+    registry = new Map();
+    g[PROCESS_ARBITER_REGISTRY_KEY] = registry;
+  }
+  return registry;
+}
+
+/**
+ * 取走并注销 key 对应的旧 bundle（后进者 dispose 先进者）。无旧 bundle 返回 null。
+ * 幂等：多次调用只返回一次；后续返回 null。
+ */
+export function takeOverProcessArbiter(key: string): ProcessArbiterBundle | null {
+  const registry = processArbiterRegistry();
+  const existing = registry.get(key);
+  if (!existing) return null;
+  registry.delete(key);
+  return existing;
+}
+
+/** 注册本实例的 bundle（覆盖式；调用方应先 takeOver 旧 bundle）。 */
+export function registerProcessArbiter(key: string, bundle: ProcessArbiterBundle): void {
+  processArbiterRegistry().set(key, bundle);
+}
+
+/**
+ * 注销 key 下指定的 bundle（stopArbiter 退出路径用）。只删除匹配的实例，
+ * 不误删同 key 后来者注册的新 bundle。
+ */
+export function releaseProcessArbiter(key: string, bundle: ProcessArbiterBundle): void {
+  const registry = processArbiterRegistry();
+  if (registry.get(key) === bundle) registry.delete(key);
 }

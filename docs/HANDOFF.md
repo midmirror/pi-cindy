@@ -145,6 +145,27 @@
 - [x] **测试**：冒烟 167→218 断言 + 三进程集成握手（A 让位→B 认领→B 消费注入，C 不抢）；
       typecheck + 全部测试文件绿；v0.5.0 tag 锚定
 
+### 2026-08-07 · 热重载泄漏根治（单实例误报 standby 永久化，EXPERIENCE #41）
+
+- [x] **根因**：pi 扩展热重载（/reload / 会话切换重建 runner）重执行模块，旧实例仲裁器定时器
+      泄漏 → 同进程 9+ 仲裁器共存，旧实例持续续期「同 pid 幽灵租约」，新实例永久 standby
+      （`/cindy-status` 显示「standby (另一实例持有连接)」但无第二 pi 进程；手机端 DEVICE_OFFLINE）
+- [x] **修复**：①`runTick` 新增 `sameProcessLease` 判定——`owner_pid === process.pid` 且非己
+      ownerId 的租约视为重载幽灵，无有效交接信号即 CAS 立即接管（不等 staleMs）；②进程级仲裁器
+      注册表（globalThis）：`takeOverProcessArbiter`/`registerProcessArbiter`/
+      `releaseProcessArbiter`，新模块 startArbiter 先 dispose 旧 bundle（停仲裁器 + sweep + 实例
+      心跳，不关 DB）再注册自己的，任意时刻只一个活仲裁器
+- [x] **测试**：ownership 测试 16→30 断言（同 pid 幽灵立即接管 <2s / 注册表 takeOver 幂等 / 重载
+      模拟 A 停 B 接无翻转）；`npm test` 纳入 ownership.test.js（此前只跑 smoke + multi-process）
+- [x] **token 对防御性校验**（EXPERIENCE #42）：`isValidTokenPair`（≥16 字符）——畸形刷新/登录
+      响应不落盘（真机复现 refreshToken="rt" 覆盖好 token → 永久 401）；401 INVALID_REFRESH_TOKEN
+      自动 clearSession（瞬态网络错误不清）。冒烟 241→249 断言
+- [x] **真机验证**（重启后）：单进程无幽灵仲裁器；同 pid 幽灵租约立即接管；坏 token 由新代码
+      自动清会话（session.enc 已删）→ 需重新登录恢复连接
+- [x] **死宿主会话清理补洞**（EXPERIENCE #43）：sweep 按会话反查（host 不在活实例/已空 →
+      归档），手机端列表不再堆积死会话。真机：12 active → 1 active（仅当前活进程会话）；
+      冒烟 249→252 断言
+
 ## 未完成
 
 ### P1：会话路由真机验证清单（目标 v0.5.0，自动化测试已覆盖握手，真机待跑）

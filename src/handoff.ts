@@ -23,10 +23,27 @@ export async function consumeMailboxForSession(sessionId: string): Promise<void>
 }
 
 export function sweepStaleInstances(now: number = Date.now(), staleMs: number = 30_000): void {
+  // 1) 死实例清理：cindy_instances 心跳过期 + pid 死 → 归档其会话
   const stale = getStmt("SELECT instance_id FROM cindy_instances").all() as { instance_id: string }[];
   for (const { instance_id } of stale) {
     if (!instanceAlive(instance_id, now, staleMs)) {
       clearHostAndArchiveForInstance(instance_id);
+    }
+  }
+  // 2) 孤儿 active 会话清理（修：死实例行被 releaseInstance 优雅删除后，路径 1 遍历
+  //    cindy_instances 看不到它 → 其会话 host 指向不存在的实例、status 永为 active →
+  //    手机端 sessions:list "active" 堆积死会话）。按会话反查：active 会话的 host 不在
+  //    活实例 → 归档；host 已空（router 死宿主路径只清 host 不归档）→ 归档。
+  //    当前进程的会话 host=本进程活实例（心跳新鲜）→ 不受影响；pi 重启 resume 同会话
+  //    由 tracker session_start 重新激活（host=当前实例），不误伤。
+  const rows = getStmt("SELECT id, host_instance_id FROM sessions WHERE status = 'active'").all() as { id: string; host_instance_id: string | null }[];
+  for (const row of rows) {
+    if (row.host_instance_id == null) {
+      getStmt("UPDATE sessions SET status = 'archived', updated_at = ? WHERE id = ?").run(now, row.id);
+      continue;
+    }
+    if (!instanceAlive(row.host_instance_id, now, staleMs)) {
+      clearHostAndArchiveForInstance(row.host_instance_id);
     }
   }
 }

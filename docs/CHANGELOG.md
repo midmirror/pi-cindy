@@ -30,6 +30,30 @@
 
 ### Fixed
 
+- **热重载泄漏根治（单实例误报 standby 永久化）**：扩展热重载（/reload / 会话切换重建
+  extension runner）重执行模块，旧实例的仲裁器定时器不保证被清理 → 同进程累积多个泄漏
+  仲裁器，旧实例持续续期「同 pid 幽灵租约」，新实例永久 standby（真机复现：9+ 泄漏
+  仲裁器共存，设备离线但 lease 恒新鲜无人接管）。双管齐下：①`runTick` 新增
+  `sameProcessLease` 判定——`row.ownerPid === process.pid` 且非己 ownerId 的租约视为
+  重载幽灵，无有效交接信号即 CAS 立即接管（不等 staleMs，幽灵永不过期）；②进程级仲裁器
+  注册表（`takeOverProcessArbiter`/`registerProcessArbiter`/`releaseProcessArbiter`，
+  globalThis 跨模块实例存活）——后进者先 dispose 旧 bundle（停仲裁器 + sweep + 实例
+  心跳，不关 DB），任意时刻只一个活仲裁器，杜绝互抢翻转。跨进程互斥仍由 SQLite 单行
+  CAS 保证。测试：ownership 30 断言（同 pid 幽灵立即接管 <2s / 注册表 takeOver 幂等 /
+  重载模拟 A 停 B 接无翻转），`npm test` 纳入 ownership.test.js
+- **token 对防御性校验（畸形刷新响应不落盘）**：刷新/登录响应无条件写 session.enc——
+  服务端异常或端点漂移时返回畸形 token（真机复现 refreshToken="rt" 2 字符）直接把好
+  token 冲掉 → 永久 401 INVALID_REFRESH_TOKEN 只能重登。新增 `isValidTokenPair`（access/
+  refresh token ≥16 字符），`getAccessToken` 畸形响应返回 null 不落盘、401
+  INVALID_REFRESH_TOKEN 自动 clearSession（瞬态网络错误不清，防断网误登出）；`savePair`
+  登录/换码同样拒绝畸形 pair。测试：冒烟 241→249 断言（短/缺/null token 判无效、畸形
+  刷新不覆盖 session.enc、401 清会话）
+- **死宿主会话清理补洞（手机端列表堆积死会话）**：`sweepStaleInstances` 原只遍历
+  `cindy_instances`——死实例行被 `releaseInstance` 优雅删除后 sweep 看不到它，其 active
+  会话 host 指向不存在的实例、status 永为 active；router 死宿主路径也只清 host 不归档
+  → 手机端 sessions:list "active" 堆积死会话。修复：sweep 增加**按会话反查**——active
+  会话的 host 不在活实例 → 归档；host 已空 → 归档；当前活实例会话不受影响。测试：冒烟
+  249→252 断言（host=已删死实例归档 / host=空归档 / 活实例保留）
 - **H1 交接过期回落清 handoff**：`renew` 用 CASE 条件清过期 handoff_to/handoff_expires_at
   （新鲜保留）。此前 reclaim 后行上残留过期 handoff → standby 永久按 heartbeatMs 放宽陈旧阈值
   → 健康 owner 被误抢（flap）。单测 26b（真实 sqlite store：无人认领→A 收回→字段清空→C 不抢）

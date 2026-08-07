@@ -306,6 +306,62 @@ dead-host 分支（清 host/邮箱 failed）对**所有** input:* 生效，包�
 
 ---
 
+### 41. 扩展热重载会泄漏旧模块实例的仲裁器定时器：同 pid 幽灵租约让新实例永久 standby
+
+pi 的 `/reload`（`session.reload`）→ `resourceLoader.reload()` → `clearExtensionCache()`
+→ 扩展模块**重执行**（新模块实例），但旧实例的 `setInterval` 不保证被清理（依赖
+session_shutdown 事件送达 + 旧模块 stopArbiter 完整执行，任何一环失败即泄漏）。真机复现：
+一次会话内 9+ 泄漏仲裁器同进程共存，最早那个持续续期所有权行（heartbeat 恒新鲜），
+新实例看到「同 pid、非己 ownerId」的租约 → 永远 standby——`/cindy-status` 显示
+「standby (另一实例持有连接)」但机器上根本没有第二个 pi 进程；且持有者是幽灵（无 relay
+连接），手机端实际 DEVICE_OFFLINE。DB 里 lease 新鲜 + 无 relay socket + 日志停写
+三症状同时出现即本场景。
+
+**方法**：双管齐下，缺一不可：①`runTick` 的 standby 分支加 `sameProcessLease` 判定
+（`row.ownerPid === process.pid` 且非己 → 重载幽灵租约，无有效交接信号即 CAS 立即接管，
+不等 staleMs——幽灵会持续续期，等 staleMs 永远等不到）；②进程级仲裁器注册表
+（globalThis，跨模块实例存活）：新模块 `startArbiter` 先 `takeOverProcessArbiter` 取走旧
+bundle 并 `dispose`（停仲裁器 + sweep + 实例心跳，**不关 DB**——新实例还要用），再注册
+自己的。①单独用会互抢翻转（两个活仲裁器互相接管），②单独用挡不住「新实例刚启动、
+旧实例还没停」窗口内的误判——两者配合才安全。跨进程互斥仍由 SQLite 单行 CAS 保证，
+注册表按进程隔离。
+
+---
+
+### 42. 刷新/登录响应的 token 对必须防御性校验：畸形响应直接覆盖 session.enc = 永久登出
+
+真机复现：运行中刷新响应返回 `refreshToken: "rt"`（2 字符，服务端异常/端点漂移时），
+代码无条件 `saveSession` 落盘 → 好 token 被垃圾冲掉 → 此后所有刷新 401
+INVALID_REFRESH_TOKEN → relay 永不连接，只能手动重新登录。排查特征：`/cindy-status`
+显示连接失败但登录态仍在（session.enc 存在）、`curl` 直测 refresh 端点 401、解密
+session.enc 看到短 token。
+
+**方法**：①新增 `isValidTokenPair`（access/refresh token 均为 ≥16 字符的非空串）——
+畸形响应在 `getAccessToken` 返回 null **不落盘**（保留现状，靠重登恢复），`savePair`
+登录/换码路径同样拒绝；②401 INVALID_REFRESH_TOKEN 判定为「token 家族已死」→
+自动 `clearSession()` 让 isLoggedIn() 变 false，UI 进入登出态提示重登（瞬态网络错误
+fetch failed / timeout 不清——避免断网误登出）。诊断命令：解密 session.enc 看 token
+长度 + 直测 `/api/auth/refresh`。
+
+---
+
+### 43. 死宿主清理必须按会话反查：实例行被删后，sweep 遍历 cindy_instances 永远看不到孤儿会话
+
+真机复现：手机端 sessions:list "active" 显示 12 个会话，实际只有 1 个是当前活进程的——
+其余 10 个 host 指向已死实例（1451a4cf）、1 个 host 已空。死实例行为何消失？优雅退出/重载
+路径 `releaseInstance` 只 DELETE 实例行不归档会话；而 `sweepStaleInstances` 只遍历
+`cindy_instances` → 实例行没了 → sweep 永远扫不到它 → 其会话永久 active。router 死宿主
+路径（host 死 → 清 host + 邮箱 failed）也**只清 host 不归档** → host=NULL 的 active 孤儿。
+两层漏网让死会话无限堆积。
+
+**方法**：sweep 增加按会话反查（不依赖实例行存在）：`SELECT id, host_instance_id FROM
+sessions WHERE status='active'`——host 不在活实例（含实例行已删）→ `clearHostAndArchive
+ForInstance(host)`；host 已空 → 直接标 archived。当前进程会话 host=本进程活实例不受影响；
+pi 重启 resume 由 tracker session_start 重新激活。诊断：查 `sessions` 的 status + host 分布
+对比 `cindy_instances` 活实例。
+
+---
+
 ## 附录：问题记录（原 ISSUES.md #1-61）
 
 > 2026-08-06 · ISSUES.md 已删除并入本文件。问题表为历史快照（根因/修复/验证），

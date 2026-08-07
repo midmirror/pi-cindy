@@ -26,7 +26,11 @@ import { routeInvoke, setInvokeContext } from "./src/handlers/router.js";
 import { attachSessionTracker } from "./src/tracker.js";
 import { getRuntimeModels } from "./src/runtime.js";
 import { getEndpoint, refreshEndpoints } from "./src/endpoints.js";
-import { DeviceLinkOwnershipArbiter, createSqliteOwnershipStore } from "./src/ownership.js";
+import {
+  DeviceLinkOwnershipArbiter, createSqliteOwnershipStore,
+  takeOverProcessArbiter, registerProcessArbiter, releaseProcessArbiter,
+  type ProcessArbiterBundle,
+} from "./src/ownership.js";
 import { getStmt, closeDb } from "./src/store/db.js";
 import { readDeviceLinkSettings, updateDeviceLinkSetting } from "./src/store/settings-store.js";
 import { getInstanceId, registerInstance, heartbeatInstance, releaseInstance } from "./src/instance.js";
@@ -70,6 +74,8 @@ export default function (pi: ExtensionAPI) {
    * 单实例冷启动误报 standby）。
    */
   let arbiter: DeviceLinkOwnershipArbiter | null = null;
+  /** 本模块实例注册的进程级 bundle（stopArbiter 退租时按同一引用注销）。 */
+  let arbiterBundle: ProcessArbiterBundle | null = null;
   /**
    * 缓存 ownership store（跨 tick 复用；prepare 走 getStmt 语句缓存——
    * 修：曾注释声称缓存 store 即免 re-prepare，实际每 op 仍 db.prepare）。
@@ -151,7 +157,20 @@ export default function (pi: ExtensionAPI) {
   function startArbiter(): void {
     if (arbiter) return;
     ownershipStore ??= createSqliteOwnershipStore({ prepare: getStmt });
-    arbiter = new DeviceLinkOwnershipArbiter({
+    // 扩展热重载泄漏根治（真机复现：reload 后 9+ 泄漏仲裁器同进程共存，旧实例持续
+    // 续期，新实例被同 pid 幽灵租约永久挡在 standby）。进程级注册表后进者 dispose
+    // 先进者：先取走旧 bundle 停掉（停表 + 释放租约），再注册自己的。任意时刻只有
+    // 一个活仲裁器；跨进程互斥仍由 SQLite 单行 CAS 保证。
+    const prev = takeOverProcessArbiter("device-link");
+    if (prev) {
+      // 不 await：新实例的认领不应被旧实例的释放拖住。旧 arbiter.stop() 同步停表，
+      // 释放（DELETE）与后续认领幂等（ownerId 不同不互删）；即使释放晚到，新实例
+      // 的 sameProcessLease 路径会按 CAS 立即接管。
+      void prev.dispose().catch((err) => {
+        console.error("[pi-cindy] dispose stale arbiter failed", err);
+      });
+    }
+    const newArbiter = new DeviceLinkOwnershipArbiter({
       getStore: () => ownershipStore as ReturnType<typeof createSqliteOwnershipStore>,
       instance: { ownerPid: process.pid, ownerLabel: "pi-cindy" },
       onAcquire: () => {
@@ -185,7 +204,20 @@ export default function (pi: ExtensionAPI) {
         }
       },
     });
-    arbiter.start();
+    arbiter = newArbiter;
+    arbiterBundle = {
+      arbiter: newArbiter,
+      // 只停本模块实例的定时器（仲裁器 + sweep + 实例心跳），不关 DB：新模块实例
+      // 的 startArbiter 仍要用共享 SQLite。closeDb 只发生在 quit 退出路径。
+      dispose: async () => {
+        stopSweep();
+        stopStaleSweep();
+        stopInstanceHeartbeat();
+        await newArbiter.stop();
+      },
+    };
+    registerProcessArbiter("device-link", arbiterBundle);
+    newArbiter.start();
     startInstanceHeartbeat();
   }
 
@@ -193,6 +225,11 @@ export default function (pi: ExtensionAPI) {
     if (!arbiter) return;
     const a = arbiter;
     arbiter = null;
+    // 退租：注销本模块实例注册的 bundle（若已被后进者 takeOver，这里 no-op）
+    if (arbiterBundle) {
+      releaseProcessArbiter("device-link", arbiterBundle);
+      arbiterBundle = null;
+    }
     stopSweep();
     stopStaleSweep();
     await a.stop();

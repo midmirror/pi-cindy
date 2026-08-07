@@ -498,13 +498,39 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   authCalls.length = 0;
   globalThis.fetch = async (url, opts) => {
     authCalls.push({ url: String(url), body: JSON.parse(opts.body || '{}') });
-    return { ok: true, json: async () => ({ status: 'ok', accessToken: 'at', refreshToken: 'rt', membership: { id: 'm1' } }) };
+    return { ok: true, json: async () => ({ status: 'ok', accessToken: 'at-0123456789012345', refreshToken: 'rt-0123456789012345', membership: { id: 'm1' } }) };
   };
   const bindOutcome = await authClient.verifyBinding('global', 'bind-ticket-1', 'email', 'you@example.com', '123456');
   assert(authCalls[0].url.endsWith('/api/auth/binding/verify'), 'binding verify URL', authCalls[0].url);
   assert(authCalls[0].body.code === '123456' && authCalls[0].body.bindTicket === 'bind-ticket-1', 'verify 带 code/bindTicket', authCalls[0].body);
   assert(authCalls[0].body.deviceId && authCalls[0].body.deviceId.length > 0, 'verify 带 deviceId');
   assert(bindOutcome.status === 'ok', 'verify ok 返回 TokenPair 形状', bindOutcome);
+  globalThis.fetch = origFetch;
+
+  // ============ 20b. token 对防御性校验（畸形响应不落盘，防 session.enc 被垃圾 token 冲掉） ============
+  // 真机复现：刷新响应返回 refreshToken="rt"（2 字符）直接覆盖好 token → 永久 401，只能重登。
+  assert(authClient.isValidTokenPair({ accessToken: 'at', refreshToken: 'rt' }) === false, '短 token 对判无效');
+  assert(authClient.isValidTokenPair({ accessToken: 'at-0123456789012345', refreshToken: 'rt-0123456789012345' }) === true, '长 token 对判有效');
+  assert(authClient.isValidTokenPair(null) === false, 'null 判无效');
+  assert(authClient.isValidTokenPair({ accessToken: 'at-0123456789012345' }) === false, '缺 refreshToken 判无效');
+  // 畸形刷新响应：getAccessToken 返回 null，session.enc 不被覆盖
+  // （先 logout 清掉 binding 测试留下的 cachedToken + session.enc，保证走真实刷新路径）
+  const tokenStore = jiti(path.join(base, 'store/token-store.js'));
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({}) });
+  await authClient.logout();
+  tokenStore.saveSession({ version: 1, realm: 'global', refreshToken: 'good-0123456789012345' });
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ accessToken: 'at', refreshToken: 'rt', membership: { id: 'm1' } }) });
+  const badRefresh = await authClient.getAccessToken('global');
+  assert(badRefresh === null, '畸形刷新响应 → null（不落盘）');
+  const sessionAfterBad = tokenStore.loadSession();
+  assert(sessionAfterBad && sessionAfterBad.refreshToken === 'good-0123456789012345', 'session.enc 未被垃圾 token 覆盖', sessionAfterBad?.refreshToken);
+  // 401 INVALID_REFRESH_TOKEN → 清会话（强制重登）
+  globalThis.fetch = async () => ({
+    ok: false, status: 401, text: async () => '{"error":{"code":"INVALID_REFRESH_TOKEN","message":"invalid"}}',
+  });
+  const deadRefresh = await authClient.getAccessToken('global');
+  assert(deadRefresh === null, 'INVALID_REFRESH_TOKEN → null');
+  assert(tokenStore.loadSession() === null, '401 后会话被清（提示重新登录）');
   globalThis.fetch = origFetch;
 
   // ============ 17. 被控授权门禁（revokedControllers / remoteControlEnabled，对齐 desktop dispatch.ts） ============
@@ -751,6 +777,27 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const irow = db.prepare('SELECT 1 FROM cindy_instances WHERE instance_id = ?').get(iid);
     assert(!irow, '实例行删除');
     store.deleteSession(sess.id); store.deleteSession(s2.id);
+    // sweepStaleInstances 孤儿会话反查（修：死实例行被 releaseInstance 删除后，
+    // 旧 sweep 只看 cindy_instances → 看不到死实例 → 其 active 会话永不归档，
+    // 手机端列表堆积死会话。现按会话反查 host 不在活实例 → 归档）
+    const hs2 = jiti(path.join(base, 'handoff.js'));
+    // 场景 A：host 指向已删除的死实例（实例行不存在）→ sweep 归档
+    const orphanA = store.createSession({ hostInstanceId: 'ghost-inst-gone' });
+    // 场景 B：host 已空（router 死宿主路径只清 host 不归档）→ sweep 归档
+    const orphanB = store.createSession({ hostInstanceId: 'ghost-inst-b' });
+    store.updateSession(orphanB.id, { hostInstanceId: null });
+    // 场景 C：活实例 host → 保留（用当前测试进程实例，心跳未启动也算 alive？——
+    // 心跳未启动时 cindy_instances 无行 → instanceAlive 返回 false → 会误归档，
+    // 故这里显式注册活实例验证保留路径）
+    const liveInst = jiti(path.join(base, 'instance.js'));
+    liveInst.registerInstance();
+    const liveIid = liveInst.getInstanceId();
+    const liveSess = store.createSession({ hostInstanceId: liveIid });
+    hs2.sweepStaleInstances(Date.now(), 30_000);
+    assert(store.getSession(orphanA.id).status === 'archived', 'sweep 归档 host=死实例（实例行已删）的会话');
+    assert(store.getSession(orphanB.id).status === 'archived', 'sweep 归档 host=空 的 active 会话');
+    assert(store.getSession(liveSess.id).status === 'active', 'sweep 保留活实例会话');
+    store.deleteSession(orphanA.id); store.deleteSession(orphanB.id); store.deleteSession(liveSess.id);
     // purgeFailedMailbox
     hs.upsertMailbox(sess.id, 'cid-p1', 'maker:input:enqueue', ['a', {}]);
     hs.failPendingMailboxForSessions([sess.id]);

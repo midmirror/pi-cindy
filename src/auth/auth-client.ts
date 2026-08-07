@@ -43,6 +43,19 @@ export class AuthApiError extends Error {
   }
 }
 
+/**
+ * 刷新/登录响应的 token 对防御性校验（修：曾无条件落盘——服务端异常或端点漂移时
+ * 返回畸形 token（真机复现 refreshToken="rt"），直接覆盖 session.enc 把好 token
+ * 冲掉 → 永久 401 INVALID_REFRESH_TOKEN，只能重新登录）。真实 refresh token 是
+ * 长串（JWT/opaque），<16 字符必然是垃圾，拒绝保存。
+ */
+export function isValidTokenPair(pair: unknown): pair is TokenPair {
+  if (!pair || typeof pair !== "object") return false;
+  const p = pair as Record<string, unknown>;
+  return typeof p.accessToken === "string" && p.accessToken.length >= 16
+    && typeof p.refreshToken === "string" && p.refreshToken.length >= 16;
+}
+
 async function apiFetch(baseUrl: string, path: string, opts: {
   method?: string; body?: unknown; token?: string; timeoutMs?: number;
 } = {}): Promise<unknown> {
@@ -86,6 +99,8 @@ export async function getAccessToken(realm: "cn" | "global" = "global"): Promise
     try {
       const pair = await refreshToken(r, session.refreshToken);
       if (gen !== cacheGeneration) return null; // 期间已登出：不写回
+      // 畸形响应不落盘（见 isValidTokenPair）：保留现状，靠重新登录恢复
+      if (!isValidTokenPair(pair)) return null;
       saveSession({ version: 1, realm: r, refreshToken: pair.refreshToken });
       cachedToken = pair.accessToken;
       try {
@@ -93,9 +108,15 @@ export async function getAccessToken(realm: "cn" | "global" = "global"): Promise
         cachedExp = payload.exp * 1000;
       } catch { cachedExp = Date.now() + 3600_000; }
       return cachedToken;
-    } catch {
+    } catch (err) {
       cachedToken = null;
       cachedExp = 0;
+      // refresh token 家族已失效（撤销/轮换被拒）：清会话强制重新登录。
+      // 瞬态网络错误（fetch failed / timeout）不清——避免断网误登出。
+      if (err instanceof AuthApiError
+        && (err.code === "INVALID_REFRESH_TOKEN" || err.statusCode === 401)) {
+        clearSession();
+      }
       return null;
     }
   })();
@@ -135,6 +156,10 @@ export async function getProviders(realm: "cn" | "global"): Promise<ProviderConf
 }
 
 function savePair(realm: "cn" | "global", pair: TokenPair) {
+  // 登录/换码响应同样防御性校验：畸形 pair 不落盘（防止 session.enc 被垃圾 token 冲掉）
+  if (!isValidTokenPair(pair)) {
+    throw new AuthApiError("INVALID_TOKEN_RESPONSE", 502, "auth 响应缺少有效 token 对");
+  }
   saveSession({ version: 1, realm, refreshToken: pair.refreshToken });
   cachedToken = pair.accessToken;
   try {
