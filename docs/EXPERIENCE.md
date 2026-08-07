@@ -360,6 +360,17 @@ ForInstance(host)`；host 已空 → 直接标 archived。当前进程会话 hos
 pi 重启 resume 由 tracker session_start 重新激活。诊断：查 `sessions` 的 status + host 分布
 对比 `cindy_instances` 活实例。
 
+### 47. 子 agent（Agent 工具）会话：独立 runner 重新实例化扩展 + 仲裁器劫持
+
+pi-subagents 用 `createAgentSession` + `SessionManager.inMemory()` 在主进程内建子会话，
+`bindExtensions` 为子会话建独立 extension runner 并**重新 emit session_start** —— 本扩展在
+子 agent 会话里再次实例化，tracker 曾把子会话落库推手机（会话列表噪音）；且子 agent 实例
+`startArbiter()` 会 `takeOverProcessArbiter` 停掉主实例仲裁器 → 主实例降级断 relay。
+**判定信号**：`ctx.sessionManager.isPersisted() === false`（主会话恒持久，in-memory 只出现在
+SDK 子会话；配置 `persistSession` 的自定义 agent 除外，接受漏判）。
+**教训**：任何 `session_start` 处理器都要考虑子 agent 场景（独立 runner 重入）；子 agent
+的 activeId 保持 null 后，其消息/归档/推送自然跳过，无需逐事件过滤。
+
 ---
 
 ## 附录：问题记录（原 ISSUES.md #1-61）

@@ -4,6 +4,20 @@
 
 ## [Unreleased] — 2026-08-07 · 开源发布准备
 
+### Fixed
+
+- **子 agent（Agent 工具）会话不再同步到手机端**（用户需求）：pi-subagents 用
+  `createAgentSession` + `SessionManager.inMemory()` 在主进程内建子会话，`bindExtensions`
+  会为子会话建独立 extension runner 并重新 emit `session_start` —— 此前子 agent 会话被
+  落库并 push 到手机（会话列表噪音），且子 agent 实例 `startArbiter()` 会
+  `takeOverProcessArbiter` 停掉主实例仲裁器 → 主实例被降级断 relay。修复：`isSubagentCtx`
+  （`ctx.sessionManager.isPersisted() === false` 判定）在 tracker 与 index 的 `session_start`
+  前置守卫——子 agent 不落库、不 setActiveId、不推手机、不参与仲裁/不连 relay；子 agent
+  runner 的 activeId 恒 null，其消息/归档/推送自然跳过，主会话 activeId 与消息流不受污染。
+  判定缺省保守（`isPersisted` 缺失/配置 `persistSession` 的自定义 agent 不过滤）。
+  冒烟 19.7 +10（独立子 runner 模拟：不落库/不占 activeId/不推/消息不落主会话/shutdown
+  不归档不清 activeId/主会话消息回归）
+
 ### Added
 
 - **已发布 npm**：`pi-cindy@0.5.1` 公开（`npm view` 可见，tarball 108 文件）；pi.dev 包市场自动抓取（`pi-package` keyword）；本地验证 `pi -e npm:pi-cindy` 安装加载正常（与 symlink 本地版同名工具冲突属预期，正式安装前需移除旧链接）

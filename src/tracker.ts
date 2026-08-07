@@ -19,6 +19,19 @@ import { consumeMailboxForSession } from "./handoff.js";
  *  mobile preferCompleteMessage 据此不把截断行当完整内容、保留完整侧。 */
 const REMOTE_CONTENT_TRUNCATED = "remoteContentTruncated";
 
+/**
+ * 子 agent 会话判定：pi-subagents（Agent 工具）在主进程内用 createAgentSession +
+ * SessionManager.inMemory() 建子会话，bindExtensions 会重新 emit session_start ——
+ * 本扩展在子 agent 会话里被再次实例化。子 agent 会话不应出现在手机端（噪音），
+ * 也不应劫持 activeId。信号：sessionManager 非持久化。主会话（TUI/RPC/print）恒为
+ * 持久 SessionManager（sdk.js 默认 SessionManager.create），in-memory 只出现在
+ * SDK 子会话（Agent 工具默认；配置 persistSession 的自定义 agent 除外，接受漏判）。
+ */
+export function isSubagentCtx(ctx: { sessionManager?: unknown }): boolean {
+  const sm = ctx.sessionManager as { isPersisted?: () => boolean } | undefined;
+  return typeof sm?.isPersisted === "function" && !sm.isPersisted();
+}
+
 function iso(v: number | null | undefined): string | null {
   return v == null ? null : new Date(v).toISOString();
 }
@@ -43,6 +56,10 @@ export function attachSessionTracker(
   setActiveId: (id: string | null) => void,
 ): void {
   pi.on("session_start", async (_event, ctx) => {
+    // 子 agent（Agent 工具）会话：不落库、不 setActiveId、不推手机、不消费邮箱。
+    // 子 agent 实例的 activeId 保持 null，其 message_end 等事件全部自然跳过。
+    // （用户需求：手机上不显示子 agent 会话。）
+    if (isSubagentCtx(ctx)) return;
     // 捕获当前 pi 会话的运行时能力（modelRegistry / abort / compact / isIdle），
     // invoke handlers（maker.ts）据此派生 capabilities 与执行远程控制。
     // 必须在 client 检查之前：首次 session_start 时 relay 连接可能仍在途。

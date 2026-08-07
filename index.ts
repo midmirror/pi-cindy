@@ -23,7 +23,7 @@ import {
 import { loadOrCreateDeviceId, getSession } from "./src/store/session-store.js";
 import { loadSession } from "./src/store/token-store.js";
 import { routeInvoke, setInvokeContext } from "./src/handlers/router.js";
-import { attachSessionTracker } from "./src/tracker.js";
+import { attachSessionTracker, isSubagentCtx } from "./src/tracker.js";
 import { getRuntimeModels } from "./src/runtime.js";
 import { getEndpoint, refreshEndpoints } from "./src/endpoints.js";
 import {
@@ -340,6 +340,10 @@ export default function (pi: ExtensionAPI) {
 
   // 自动重连（登录态下每次 session_start 拉起仲裁 + 连接，状态线由仲裁回调驱动）
   pi.on("session_start", async (_event, ctx) => {
+    // 子 agent（Agent 工具）会话：不设 statusCtx、不参与仲裁、不连 relay。
+    // 否则子 agent 实例会 startArbiter() → takeOverProcessArbiter 停掉主实例仲裁器 →
+    // 主实例被降级、relay 断开（用户手机端偶发断连的根源之一）。
+    if (isSubagentCtx(ctx)) return;
     statusCtx = ctx; // 供 onRelayError/状态更新使用（status line 更新句柄）
     wireInvokeContext(); // 路由上下文幂等接线（await 竞态前就绪）
     if (isLoggedIn()) {

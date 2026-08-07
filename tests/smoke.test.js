@@ -481,6 +481,52 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   assert(store.getSession(stSession.id).status === 'archived', 'standby shutdown 仍归档（防空白会话堆积）');
   assert(trackerActive.id === null, 'standby shutdown 清 activeId');
 
+  // ============ 19.7 tracker：子 agent（Agent 工具）会话不落库、不占 activeId、不推手机 ============
+  // pi-subagents 用 createAgentSession + SessionManager.inMemory() 同进程建子会话，
+  // bindExtensions 会为子会话建独立 extension runner（独立 API 实例），session_start
+  // 重新触发。判定信号：sessionManager.isPersisted()=false。
+  // 用户需求：手机上不显示子 agent 会话（噪音）；同时子 agent 不得劫持主会话 activeId。
+  trackerClient = { push: (ch, data) => trackerPushes.push({ ch, data }), setBusy: () => {} }; // 恢复就绪 client
+  // 先建主会话（persisted），activeId 指向主会话
+  await trackerEvents['session_start'](null, { ...tctx, sessionManager: { getSessionId: () => 'main-sdk-001', isPersisted: () => true }, cwd: '/tmp/main' });
+  const mainSession = store.findSessionBySdkId('main-sdk-001');
+  assert(mainSession && mainSession.status === 'active', 'persisted 主会话正常落库', mainSession && { id: mainSession.id });
+  assert(trackerActive.id === mainSession.id, '主会话 setActiveId 生效', trackerActive.id);
+  const pushesAfterMain = trackerPushes.length;
+  // 子 agent session_start（in-memory）：不落库、不 setActiveId、不 push
+  await trackerEvents['session_start'](null, {
+    sessionManager: { getSessionId: () => 'subagent-sdk-001', isPersisted: () => false },
+    cwd: '/tmp/main', model: { id: 'claude-haiku-4-5', provider: 'anthropic' },
+  });
+  assert(store.findSessionBySdkId('subagent-sdk-001') === null, '子 agent 会话不落库', store.findSessionBySdkId('subagent-sdk-001'));
+  assert(trackerActive.id === mainSession.id, '子 agent 不劫持 activeId（仍指向主会话）', trackerActive.id);
+  assert(trackerPushes.length === pushesAfterMain, '子 agent 不推 sessions:created', trackerPushes.map((p) => p.ch));
+  // 子 agent 有自己的 extension runner/API → 独立 tracker 实例：session_start 被跳过 →
+  // activeId 保持 null → 子 agent 消息/归档/推送全部自然跳过（真实架构：子 agent 事件
+  // 不到主 tracker，这里用独立实例模拟同一进程内的子 agent runner）
+  const subEvents = {};
+  const subPi = { on: (ev, fn) => { subEvents[ev] = fn; } };
+  const subActive = { id: null };
+  const subPushes = [];
+  tracker.attachSessionTracker(subPi, () => ({ push: (ch, d) => subPushes.push({ ch, d }), setBusy: () => {} }), () => subActive.id, (id) => { subActive.id = id; });
+  await subEvents['session_start'](null, {
+    sessionManager: { getSessionId: () => 'subagent-sdk-001', isPersisted: () => false },
+    cwd: '/tmp/main', model: { id: 'claude-haiku-4-5', provider: 'anthropic' },
+  });
+  assert(store.findSessionBySdkId('subagent-sdk-001') === null, '子 agent runner：会话不落库', store.findSessionBySdkId('subagent-sdk-001'));
+  assert(subActive.id === null, '子 agent runner：activeId 保持 null', subActive.id);
+  assert(subPushes.length === 0, '子 agent runner：不推 sessions:created', subPushes.map((p) => p.ch));
+  await subEvents['message_end']({ message: { role: 'user', content: '子 agent 任务' } }, {});
+  assert(store.listMessages(mainSession.id).length === 0, '子 agent 消息不落入主会话', store.listMessages(mainSession.id).map((m) => m.content));
+  await subEvents['message_end']({ message: { role: 'assistant', content: '子 agent 结果', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 } } }, {});
+  assert(store.listMessages(mainSession.id).length === 0, '子 agent assistant 消息也不落入主会话');
+  await subEvents['session_shutdown']();
+  assert(store.getSession(mainSession.id).status === 'active', '子 agent shutdown 不归档主会话', store.getSession(mainSession.id) && { status: store.getSession(mainSession.id).status });
+  assert(trackerActive.id === mainSession.id, '子 agent shutdown 不清主 activeId', trackerActive.id);
+  // 子 agent 后主会话消息仍正常落库（回归）
+  await trackerEvents['message_end']({ message: { role: 'user', content: '主会话消息' } }, {});
+  assert(store.listMessages(mainSession.id).length === 1 && store.listMessages(mainSession.id)[0].content === '主会话消息', '子 agent 结束后主会话消息正常落库', store.listMessages(mainSession.id).map((m) => m.content));
+
 
   // ============ 20. binding 流程：request-code / verify 请求形状（对齐参考 auth-client） ============
   const authClient = jiti(path.join(base, 'auth/auth-client.js'));
