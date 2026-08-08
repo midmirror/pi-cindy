@@ -48,6 +48,9 @@ const mySid = process.argv[3];
 if (mySid) store.createSession({ id: mySid, hostInstanceId: inst.getInstanceId() });
 activeId = mySid || null;
 arb.start();
+// 就绪信号：jiti 编译 + registerInstance + createSession + arbiter 启动完成
+// （慢环境/CI 高负载下 B 可能晚于 invoke 就绪，测试必须先等 READY 再发路由）
+console.log(process.argv[1] + ' READY');
 process.stdin.on('data', (buf) => {
   const line = buf.toString().trim();
   if (line.startsWith('invoke ')) {
@@ -113,8 +116,11 @@ function runWorker(label, duration) {
   const pA2 = spawnW('A2', '', 4000);
   await waitOut(pA2, 'A2 ACQUIRED', 1000);
   const pC = spawnW('C', '', 2000);
-  const pB = spawnW('B', 'sess-b', 2000);
-  await sleep(150); // B 已入 standby（不打印 ACQUIRED）
+  // B 存活 4000ms（原 2000ms）：保证接管窗口内 B 不因超时先退出；
+  // waitOut READY 替代 sleep(150)——B 经 jiti 编译 TS + createSession + registerInstance
+  // 可能晚于 invoke 就绪（CI 高负载稳定复现 ROUTE-ERR NOT_FOUND）。
+  const pB = spawnW('B', 'sess-b', 4000);
+  await waitOut(pB, 'B READY', 5000);
   pA2.stdin.write('invoke sess-b hello-from-mobile\n');
   const bRes = await waitOut(pB, 'INJECTED', 5000);
   const bOut = bRes.out;
