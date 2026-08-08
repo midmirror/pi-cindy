@@ -1,0 +1,34 @@
+name: Release
+
+# 打 v* tag 即自动创建 GitHub Release，notes 从 docs/CHANGELOG.md 对应版本条目提取。
+# 发版流程：改 CHANGELOG → bump package.json version → git tag vX.Y.Z → push tag。
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Extract changelog notes
+        run: |
+          python3 - "$GITHUB_REF_NAME" > notes.md <<'PY'
+          import re, sys
+          tag = sys.argv[1].lstrip('v')
+          txt = open('docs/CHANGELOG.md', encoding='utf-8').read()
+          m = re.search(rf'^## \[{re.escape(tag)}\]\s.*?$(.*?)(?=^## |\Z)', txt, re.M | re.S)
+          print(m.group(1).strip() if m else 'No changelog entry found for this version.')
+          PY
+          echo "--- extracted notes ---"
+          head -8 notes.md
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md
