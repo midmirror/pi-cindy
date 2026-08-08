@@ -17,6 +17,9 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run typecheck
+      - run: npm run lint
+      - name: Coverage report (smoke suite)
+        run: npm run coverage
 
   commitlint:
     runs-on: ubuntu-latest
