@@ -4,7 +4,6 @@
  * 成功删行，失败不标 consumed（对齐 desktop agentHandoff：peek 失败不缓存 null，
  * 否则交接永久丢失）。清理：心跳陈旧 + pid 探活失败的实例 → 清 host/归档/标 failed/删实例行。
  */
-import { getSession } from "./store/session-store.js";
 import { listPendingMailbox, deleteMailbox, clearHostAndArchiveForInstance } from "./store/handoff-store.js";
 import { routeInvoke } from "./handlers/router.js";
 import { getStmt } from "./store/db.js";

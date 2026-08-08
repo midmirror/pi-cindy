@@ -44,7 +44,7 @@ export async function list(args: unknown[]) {
   const statusFilter = status === "active" || status === "archived" ? status : null;
   const includePinned = options.includePinned === true;
 
-  let rows = listSessions(statusFilter ? { status: statusFilter } : undefined);
+  const rows = listSessions(statusFilter ? { status: statusFilter } : undefined);
   let result;
   if (includePinned) {
     // 置顶会话不受 cap 限制、优先展示（对齐 desktop includePinned 合并语义）。

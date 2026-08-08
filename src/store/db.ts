@@ -100,12 +100,12 @@ let db: DatabaseSyncType | null = null;
  */
 function loadDatabaseSync(): typeof DatabaseSyncType {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     return require("node:sqlite").DatabaseSync as typeof DatabaseSyncType;
   } catch (err) {
     throw new Error(
       `node:sqlite 不可用（需要 Node >= 22.23，当前 ${process.version}）：`
       + `${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
     );
   }
 }
@@ -198,7 +198,7 @@ export function getDb(): DatabaseSyncType {
   // 延迟 require 避免 db.ts ↔ migration.ts 循环依赖（migration.ts 只 import getDb/DATA_DIR）。
   // 迁移幂等（migration_done / db 非空 / sessions.json 缺失均跳过），失败 fail-open 仅告警。
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+     
     const { runMigrationIfNeeded } = require("./migration.js");
     runMigrationIfNeeded();
   } catch (e) {

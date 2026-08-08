@@ -17,11 +17,10 @@
  *  - stop/abort 改走 ctx.abort（ExtensionAPI 顶层无 abort，pi().abort?.() 恒 undefined）；
  *  - 补齐手机端常规路径的其余 input 通道（compact/resume/remove/update/move/clear 等）。
  */
-import { randomUUID } from "node:crypto";
 import { createSession, getSession, updateSession, listSessions } from "../store/session-store.js";
 import { getInvokeContext } from "./router.js";
 import {
-  getRuntimeModels, getCurrentModel, getRuntimeContextUsage, getScopedThinkingLevel,
+  getRuntimeModels, getRuntimeContextUsage, getScopedThinkingLevel,
   providerDisplayName,
   abortRuntime, isRuntimeIdle, compactRuntime,
   resolvePiModel, effortsForModel, normalizeEffort,
@@ -30,8 +29,6 @@ import {
 
 function pi(): any { return getInvokeContext().pi; }
 function push(ch: string, data: unknown, sid?: string) { getInvokeContext().push(ch, data, sid); }
-
-function isoNow(): string { return new Date().toISOString(); }
 
 /** 手机端 QueuedRemoteMessage 的投影（mobile src/session/types.ts 必填字段子集）。 */
 export interface QueuedRemoteMessage {
@@ -272,7 +269,7 @@ export async function inputSteer(args: unknown[]) {
       }
       if (item.effort) pi().setThinkingLevel?.(normalizeEffort(item.effort));
       pi().sendUserMessage?.(item.text, { deliverAs: "steer" });
-    } catch {}
+    } catch { /* 静默吞错：notify/close/parse 容错 */ }
   }
   return pushProjection(sid);
 }
@@ -480,7 +477,7 @@ export async function steer(args: unknown[]) {
     touchUserSend(sid);
     try {
       pi().sendUserMessage?.(action.text, { deliverAs: "steer" });
-    } catch {}
+    } catch { /* 静默吞错：notify/close/parse 容错 */ }
   }
   return { ok: true };
 }
@@ -535,7 +532,7 @@ export async function setEffort(args: unknown[]) {
   if (!sid || !effort) invalidParams("sessionId and effort required");
   updateSession(sid, { effort });
   push("local-db:sessions:patched", { sessionId: sid, patch: { effort } });
-  try { pi().setThinkingLevel?.(normalizeEffort(effort)); } catch {}
+  try { pi().setThinkingLevel?.(normalizeEffort(effort)); } catch { /* 静默吞错：notify/close/parse 容错 */ }
   return { ok: true };
 }
 

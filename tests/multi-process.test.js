@@ -100,7 +100,7 @@ function runWorker(label, duration) {
   assert(linesB.some((l) => l.includes('B STOP')), '场景1：B 应正常退出');
   console.log('A:', outA.trim());
   console.log('B:', outB.trim());
-  try { pA.kill(); } catch {}
+  try { pA.kill(); } catch { /* 进程可能已退出 */ }
 
   // ---- 场景 2：三进程会话路由握手：A 让位 → B 认领 → B 消费邮箱注入；C 不抢 ----
   const spawnW = (label, sid, dur) => {
@@ -136,9 +136,9 @@ function runWorker(label, duration) {
   assert(okC, '场景2：C 全程不抢', JSON.stringify({ cOut }));
   // 接管延迟绑定（M6）：fastPoll=20ms，目标 ≤2s 远低于 v0.4 优雅接管 4.4s（回归护栏）
   assert(bRes.ms < 2000, '场景2：接管+消费注入 ≤2s（目标 ~1s）', bRes.ms + 'ms');
-  [pA2, pB, pC].forEach((p) => { try { p.stdin.write('shutdown\n'); } catch {} });
+  [pA2, pB, pC].forEach((p) => { try { p.stdin.write('shutdown\n'); } catch { /* 可能已退出 */ } });
   await sleep(200);
-  [pA2, pB, pC].forEach((p) => { try { p.kill(); } catch {} });
+  [pA2, pB, pC].forEach((p) => { try { p.kill(); } catch { /* 可能已退出 */ } });
 
   console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURES');
   process.exit(failures ? 1 : 0);

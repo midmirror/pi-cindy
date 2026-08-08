@@ -110,7 +110,7 @@ export function attachSessionTracker(
     c.push("local-db:sessions:patched", { sessionId: sid, patch: { model: model.id } });
   });
 
-  pi.on("message_end", async (event, ctx) => {
+  pi.on("message_end", async (event, _ctx) => {
     const sid = getActiveId();
     if (!sid) return;
     // 落库不依赖 client（standby 进程消息也进共享库，手机端经 owner 读可见）；

@@ -37,9 +37,9 @@ let snap: RuntimeSnapshot = {
 
 /** tracker session_start 调用：捕获当前 pi 会话的运行时能力。 */
 export function captureRuntimeCtx(ctx: ExtensionContext): void {
-  let models: any[] = [];
+  let models: any[];
   try { models = ctx.modelRegistry?.getAvailable?.() ?? []; } catch { models = []; }
-  let scoped: readonly { model: any; thinkingLevel?: string }[] = [];
+  let scoped: readonly { model: any; thinkingLevel?: string }[];
   try { scoped = (ctx.scopedModels ?? []) as never; } catch { scoped = []; }
   const providerNames = new Map<string, string>();
   try {

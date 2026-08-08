@@ -16,7 +16,7 @@ import os from "node:os";
 import {
   PROTOCOL_VERSION, MAX_FRAME_BYTES,
   type Envelope, type HelloPayload, type HelloAckPayload,
-  type LinkAcceptPayload, type LinkClosePayload, type InvokePayload, type InvokeResultPayload,
+  type LinkAcceptPayload, type LinkClosePayload, type InvokePayload,
   type PushPayload, type PresenceSetPayload,
 } from "../types.js";
 import { readDeviceLinkSettings, isControllerRevoked } from "../store/settings-store.js";
@@ -158,7 +158,7 @@ export class DeviceLinkClient {
       // 握手 watchdog：保持到 hello-ack / relay-error；超时 close（触发 close → 重连路径）。
       const timeout = setTimeout(() => {
         dbgLog("handshake timeout, closing");
-        try { ws?.close(); } catch {}
+        try { ws?.close(); } catch { /* 静默吞错：notify/close/parse 容错 */ }
         fail(new Error("Handshake timeout"));
       }, HANDSHAKE_TIMEOUT_MS);
 
@@ -202,7 +202,7 @@ export class DeviceLinkClient {
             dbgLog(`device-link protocol mismatch: server v${ack.serverProtocolVersion}, client v${PROTOCOL_VERSION}; staying offline`);
             this.protocolMismatch = true;
             clearTimeout(timeout);
-            try { ws?.close(); } catch {}
+            try { ws?.close(); } catch { /* 静默吞错：notify/close/parse 容错 */ }
             fail(new Error(`DeviceLink protocol mismatch: server v${ack.serverProtocolVersion}, client v${PROTOCOL_VERSION}`));
             return;
           }
@@ -223,7 +223,7 @@ export class DeviceLinkClient {
           if (!this.connected) {
             // 握手期 relay 拒绝：终止本次握手
             clearTimeout(timeout);
-            try { ws?.close(); } catch {}
+            try { ws?.close(); } catch { /* 静默吞错：notify/close/parse 容错 */ }
             fail(new Error(`Relay error: ${JSON.stringify(env.payload)}`));
           }
           // 已握手后的 relay-error 非致命：路由给 handler 记录（参考实现按 pending 请求处理，不杀连接）
@@ -526,7 +526,7 @@ export class DeviceLinkClient {
     this.ws = null;
     this.connEpoch += 1; // 旧 socket 的迟到 close/error 事件不再影响新连接状态
     if (ws) {
-      try { ws.close(); } catch {}
+      try { ws.close(); } catch { /* 静默吞错：notify/close/parse 容错 */ }
     }
   }
 

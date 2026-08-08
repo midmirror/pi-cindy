@@ -74,7 +74,7 @@ export function runMigrationIfNeeded(): boolean {
   } catch (err) {
     // fail-open：迁移失败不阻断启动，store 回退 JSON 兜底（db.ts 见 Step 4）
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+       
       const { dbgLog } = require("../dbg.js");
       dbgLog(`migration failed: ${err instanceof Error ? err.message : String(err)}`);
     } catch { /* ok */ }

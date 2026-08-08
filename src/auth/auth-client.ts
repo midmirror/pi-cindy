@@ -87,7 +87,7 @@ async function apiFetch(baseUrl: string, path: string, opts: {
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       let code = "UNKNOWN";
-      try { const e = JSON.parse(text); code = e.error?.code || e.code || `HTTP_${res.status}`; } catch {}
+      try { const e = JSON.parse(text); code = e.error?.code || e.code || `HTTP_${res.status}`; } catch { /* 静默吞错：notify/close/parse 容错 */ }
       throw new AuthApiError(code, res.status, text.slice(0, 200));
     }
     return res.json();
@@ -287,7 +287,7 @@ export async function login(realm: "cn" | "global", provider: SocialProvider): P
       // 与 desktop 的连续失败预算对齐。
       if (err instanceof AuthApiError) throw err;
       consecutiveFailures += 1;
-      if (consecutiveFailures >= 8) throw new Error(`Login failed: poll error (${(err as Error)?.message ?? String(err)})`);
+      if (consecutiveFailures >= 8) throw new Error(`Login failed: poll error (${(err as Error)?.message ?? String(err)})`, { cause: err });
       continue;
     }
     if (poll.status === "ok" && poll.code) { code = poll.code; break; }

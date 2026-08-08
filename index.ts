@@ -347,7 +347,7 @@ export default function (pi: ExtensionAPI) {
     statusCtx = ctx; // 供 onRelayError/状态更新使用（status line 更新句柄）
     wireInvokeContext(); // 路由上下文幂等接线（await 竞态前就绪）
     if (isLoggedIn()) {
-      pendingNotify = () => { try { ctx.ui.notify("Cindy: connected", "info"); } catch {} };
+      pendingNotify = () => { try { ctx.ui.notify("Cindy: connected", "info"); } catch { /* 静默吞错：notify/close/parse 容错 */ } };
       // 先参与仲裁再连 relay：只有持有者建连接，其余待命（不连，等接管回调）。
       // 修：曾 startArbiter() 后同步判 isOwner() 恒 false——单实例也误报 standby。
       startArbiter();
@@ -449,7 +449,7 @@ export default function (pi: ExtensionAPI) {
           }
           if (outcome.status === "ok") {
             ctx.ui.notify("Cindy login OK!", "info");
-            pendingNotify = () => { try { ctx.ui.notify("Cindy: relay connected", "info"); } catch {} };
+            pendingNotify = () => { try { ctx.ui.notify("Cindy: relay connected", "info"); } catch { /* 静默吞错：notify/close/parse 容错 */ } };
             startArbiter(); // 仲裁回调（onAcquire）负责连 relay + 状态
             if (arbiter?.isOwner()) ensureAndNotify(); // 已在运行（重登录）：直接补连
             return;
@@ -466,7 +466,7 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify(`Opening browser for ${method} login (${realm})...`, "info");
         await login(realm, method);
         ctx.ui.notify("Cindy login OK!", "info");
-        pendingNotify = () => { try { ctx.ui.notify("Cindy: relay connected", "info"); } catch {} };
+        pendingNotify = () => { try { ctx.ui.notify("Cindy: relay connected", "info"); } catch { /* 静默吞错：notify/close/parse 容错 */ } };
         startArbiter(); // 仲裁回调（onAcquire）负责连 relay + 状态
         if (arbiter?.isOwner()) ensureAndNotify(); // 已在运行（重登录）：直接补连
       } catch (e: any) {
@@ -569,7 +569,7 @@ export default function (pi: ExtensionAPI) {
       try {
         const c = await ensureClient();
         if (!c) { ctx.ui.notify("Connect cancelled: 连接期间持有权被接管", "warning"); return; }
-        try { ctx.ui.notify("Connected", "info"); } catch {}
+        try { ctx.ui.notify("Connected", "info"); } catch { /* 静默吞错：notify/close/parse 容错 */ }
         safeSetStatus("Cindy: relay connected");
       } catch (e: any) { ctx.ui.notify(`Connect failed: ${e.message}`, "error"); }
     },

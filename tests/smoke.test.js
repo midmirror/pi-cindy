@@ -287,8 +287,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // SQLite 化后真实库文件存在则用只读查询验证测试会话未写入（防污染真实数据）
   const realStorePath = path.join(os.homedir(), '.pi', 'cindy-sync', 'pi-cindy.db');
   if (fs.existsSync(realStorePath)) {
-    const { getDb, closeDb } = jiti(path.join(base, 'store', 'db.js'));
-    // 注意：getDb 是单例且已指向测试 DATA_DIR（process.env 在模块加载时固定），
+    jiti(path.join(base, 'store', 'db.js')); // 仅验证 db.js 可加载；getDb 单例已指向测试 DATA_DIR
     // 真实库文件存在性检查只做路径层面，不 open 真实库（避免与运行中 pi 进程争锁）
     assert(fs.existsSync(realStorePath), '真实库文件存在（路径层面校验）');
   }
@@ -995,13 +994,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
     // A：owner。B：standby（handoff 目标）。C：standby（不应抢）。
-    let aAcq = 0, aDem = 0, bAcq = 0, cAcq = 0;
+    let aAcq = 0, cAcq = 0;
     const makeArb = (store, label, extra = {}) => new DeviceLinkOwnershipArbiter({
       getStore: () => store,
       instance: { ownerPid: 1111, ownerLabel: label },
       instanceId: label, // A/B/C
-      onAcquire: () => { if (label === 'A') aAcq++; if (label === 'B') bAcq++; if (label === 'C') cAcq++; },
-      onDemote: () => { if (label === 'A') aDem++; },
+      onAcquire: () => { if (label === 'A') aAcq++; if (label === 'C') cAcq++; },
+      onDemote: () => {},
       heartbeatMs: 20, staleMs: 100, fastPollMs: 15, storeRetryMs: 5, opTimeoutMs: 20,
       ...extra,
     });
@@ -1034,18 +1033,18 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const dbMod = jiti(path.join(base, 'store/db.js'));
     const storeReal = ownership.createSqliteOwnershipStore({ prepare: dbMod.getStmt });
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    let aAcq = 0, cAcq = 0;
+    let cAcq = 0;
     const makeArb = (label, extra = {}) => new DeviceLinkOwnershipArbiter({
       getStore: () => storeReal,
       instance: { ownerPid: 3333, ownerLabel: label },
       instanceId: label,
-      onAcquire: () => { if (label === 'A') aAcq++; if (label === 'C') cAcq++; },
+      onAcquire: () => { if (label === 'C') cAcq++; },
       onDemote: () => {},
       heartbeatMs: 20, staleMs: 100, fastPollMs: 15, storeRetryMs: 5, opTimeoutMs: 20, handoffTtlMs: 40,
       ...extra,
     });
     const arbA = makeArb('A');
-    const arbB = makeArb('B'); // 不 start：目标实例不存在，交接必无人认领
+    makeArb('B'); // 不 start：目标实例不存在，交接必无人认领
     const arbC = makeArb('C');
     dbMod.getDb().prepare('DELETE FROM device_link_ownership').run();
     arbA.start(); // 阶段 1：仅 A（无 standby 竞争）——「唯一进程 self-handoff 后无人接管」自愈路径

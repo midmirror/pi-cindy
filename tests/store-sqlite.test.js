@@ -43,8 +43,8 @@ function assert(cond, name, extra) {
   assert(store.findSessionBySdkId('nope') === null, 'findSessionBySdkId miss');
 
   // messages: append/list/delete/deleteByClientId/count
-  const m1 = store.appendMessage({ id: 'm-1', sessionId: s.id, role: 'user', content: 'hi', clientId: 'c-1', createdAt: 1000 });
-  const m2 = store.appendMessage({ id: 'm-2', sessionId: s.id, role: 'assistant', content: 'yo', createdAt: 2000, usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 0, totalTokens: 6 }, stopReason: 'end_turn' });
+  store.appendMessage({ id: 'm-1', sessionId: s.id, role: 'user', content: 'hi', clientId: 'c-1', createdAt: 1000 });
+  store.appendMessage({ id: 'm-2', sessionId: s.id, role: 'assistant', content: 'yo', createdAt: 2000, usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 0, totalTokens: 6 }, stopReason: 'end_turn' });
   assert(store.getMessageCount(s.id) === 2, 'getMessageCount');
   const asc = store.listMessages(s.id);
   assert(asc.length === 2 && asc[0].id === 'm-1' && asc[1].content === 'yo', 'listMessages 升序 + usage 还原');
@@ -54,7 +54,7 @@ function assert(cond, name, extra) {
   assert(store.listMessages(s.id, { limit: 1 }).length === 1, 'listMessages limit');
   assert(store.deleteMessage(s.id, 'm-1') === true, 'deleteMessage');
   assert(store.deleteMessage(s.id, 'm-1') === false, 'deleteMessage 幂等 miss');
-  const m3 = store.appendMessage({ id: 'm-3', sessionId: s.id, role: 'user', content: 'bye', clientId: 'c-3', createdAt: 3000 });
+  store.appendMessage({ id: 'm-3', sessionId: s.id, role: 'user', content: 'bye', clientId: 'c-3', createdAt: 3000 });
   assert(store.deleteMessageByClientId(s.id, 'c-3') === true, 'deleteMessageByClientId');
   assert(store.deleteMessageByClientId(s.id, 'c-3') === false, 'deleteMessageByClientId miss');
 
