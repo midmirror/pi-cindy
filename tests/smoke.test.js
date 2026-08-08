@@ -64,6 +64,12 @@ const fakePi = {
   setModel: async (m) => { setModelCalls.push(m); return true; },
   setThinkingLevel: (l) => { setThinkingCalls.push(l); },
   abort: undefined, // 顶层不存在（对齐 ExtensionAPI）
+  // 手机端 `/` palette 数据源：extension + prompt templates + skills（skill 名带 skill: 前缀）
+  getCommands: () => [
+    { name: 'cindy-status', description: 'Show Cindy sync status', source: 'extension', sourceInfo: { path: '/ext/pi-cindy', scope: 'user' } },
+    { name: 'review', description: 'Review staged changes', source: 'prompt', sourceInfo: { path: '/home/u/.pi/agent/prompts/review.md', scope: 'user' } },
+    { name: 'skill:cpp', description: 'C++ skill', source: 'skill', sourceInfo: { path: '/home/u/.agents/skills/cpp/SKILL.md', scope: 'user' } },
+  ],
 };
 const pushes = [];
 let activeTestSid = null; // 前台会话 id（enqueue/steer 门禁用）
@@ -232,6 +238,48 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   try { await router.routeInvoke('maker:navigate-session-tree', [sid]); assert(false, 'navigate-session-tree 应拒绝'); }
   catch (e) { assert(e.code === 'CHANNEL_NOT_ALLOWED', 'navigate-session-tree 已摘除'); }
 
+  // ============ 7c. 手机端 `/` palette 三源（mobile [sessionId].tsx / new.tsx 并行拉取） ============
+  // 契约：list-agent-commands → {success, commands: agent-builtin[]}；
+  //       list-agent-skills → {success, skills: agent-skill[]}（source 'user'|'skill'）；
+  //       list-desktop-commands → {success, commands: desktop[]}（pi-cindy 无 → 空）
+  const lc = await router.routeInvoke('maker:list-agent-commands', ['pi']);
+  assert(lc.success === true, 'list-agent-commands success');
+  assert(Array.isArray(lc.commands) && lc.commands.length === 1, 'list-agent-commands 只含 extension 命令', JSON.stringify(lc.commands));
+  assert(lc.commands[0] && lc.commands[0].kind === 'agent-builtin' && lc.commands[0].name === 'cindy-status'
+    && typeof lc.commands[0].description === 'string', 'list-agent-commands 项形状（kind/name/description）');
+  const ls = await router.routeInvoke('maker:list-agent-skills', ['pi', { workingDir: '/tmp', forceReload: false }]);
+  assert(ls.success === true, 'list-agent-skills success');
+  assert(Array.isArray(ls.skills) && ls.skills.length === 2, 'list-agent-skills 含 prompt + skill 两条', JSON.stringify(ls.skills));
+  const promptRow = ls.skills.find((c) => c.name === 'review');
+  const skillRow = ls.skills.find((c) => c.name === 'skill:cpp');
+  assert(promptRow && promptRow.kind === 'agent-skill' && promptRow.source === 'user'
+    && promptRow.path === '/home/u/.pi/agent/prompts/review.md', 'prompt 映射 agent-skill source=user + path');
+  assert(skillRow && skillRow.kind === 'agent-skill' && skillRow.source === 'skill'
+    && skillRow.scope === 'user' && skillRow.enabled === true, 'skill 映射 agent-skill source=skill（名带 skill: 前缀）');
+  const ld = await router.routeInvoke('maker:list-desktop-commands', []);
+  assert(ld.success === true && Array.isArray(ld.commands) && ld.commands.length === 0, 'list-desktop-commands 空清单（pi-cindy 无 main 命令）');
+  // getCommands 缺失/抛错 → 容错空清单（success:true 空数组，不报错不重试）——老 pi 无该 API 时 palette 空面板而非错误
+  const brokenPi = { getCommands: () => { throw new Error('boom'); } };
+  router.setInvokeContext({ ...router.getInvokeContext(), pi: brokenPi });
+  const lcBroken = await router.routeInvoke('maker:list-agent-commands', ['pi']);
+  assert(lcBroken.success === true && Array.isArray(lcBroken.commands) && lcBroken.commands.length === 0, 'list-agent-commands getCommands 抛错 → 容错空清单');
+  const lsBroken = await router.routeInvoke('maker:list-agent-skills', ['pi']);
+  assert(lsBroken.success === true && Array.isArray(lsBroken.skills) && lsBroken.skills.length === 0, 'list-agent-skills getCommands 缺失 → 容错空清单');
+  const noGetCommandsPi = {};
+  router.setInvokeContext({ ...router.getInvokeContext(), pi: noGetCommandsPi });
+  const lcNone = await router.routeInvoke('maker:list-agent-commands', ['pi']);
+  assert(lcNone.success === true && lcNone.commands.length === 0, 'list-agent-commands 无 getCommands 方法 → 空清单');
+  // 逐行防御：null 行被过滤，不炸整面板（修：曾整体 cast，单行 null → TypeError → 面板 error）
+  const nullRowPi = {
+    getCommands: () => [null, { name: 'cindy-status', description: 'x', source: 'extension' }, { name: 'skill:cpp', description: 'y', source: 'skill' }],
+  };
+  router.setInvokeContext({ ...router.getInvokeContext(), pi: nullRowPi });
+  const lcNull = await router.routeInvoke('maker:list-agent-commands', ['pi']);
+  assert(lcNull.success === true && lcNull.commands.length === 1, 'list-agent-commands 过滤 null 行', JSON.stringify(lcNull.commands));
+  const lsNull = await router.routeInvoke('maker:list-agent-skills', ['pi']);
+  assert(lsNull.success === true && lsNull.skills.length === 1, 'list-agent-skills 过滤 null 行', JSON.stringify(lsNull.skills));
+  router.setInvokeContext({ ...router.getInvokeContext(), pi: fakePi });
+
   // ============ 8. store 隔离 ============
   const storeFiles = fs.readdirSync(DATA_DIR);
   assert(storeFiles.includes('pi-cindy.db'), 'store 写入隔离目录（SQLite 库）');
@@ -244,6 +292,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     // 真实库文件存在性检查只做路径层面，不 open 真实库（避免与运行中 pi 进程争锁）
     assert(fs.existsSync(realStorePath), '真实库文件存在（路径层面校验）');
   }
+  // token 登录态隔离快照（EXPERIENCE #45 回归）：token-store 曾硬编码 ~/.pi/cindy-sync，
+  // 冒烟测试的 logout/saveSession/clearSession 全部作用在真实 session.enc 上——
+  // 每次 npm test 删真实登录态，重启 pi 即“登录态丢了”。记录真实文件字节快照，
+  // 20b 段（全量 token 操作）结束后比对，任何写/删都算污染。
+  // 路径同源引用 token-store.DEFAULT_DIR（修：曾硬编码，DIR 逻辑迁移后快照会静默校验错路径）。
+  const realTokPath = path.join(jiti(path.join(base, 'store/token-store.js')).DEFAULT_DIR, 'session.enc');
+  const realTokBefore = fs.existsSync(realTokPath) ? fs.readFileSync(realTokPath) : null;
 
   // ============ 9. create-session 透传预生成 id（幂等） ============
   const preId = 'cm-9f8e7d6c5b4a3210';
@@ -570,13 +625,50 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   assert(badRefresh === null, '畸形刷新响应 → null（不落盘）');
   const sessionAfterBad = tokenStore.loadSession();
   assert(sessionAfterBad && sessionAfterBad.refreshToken === 'good-0123456789012345', 'session.enc 未被垃圾 token 覆盖', sessionAfterBad?.refreshToken);
+  // 连续畸形累计（修：曾只跳过不落盘 → 服务端持续异常时无限静默重试）：第 2 次保留会话，
+  // 第 3 次（上限）→ 清会话强制重登。
+  const bad2 = await authClient.getAccessToken('global');
+  assert(bad2 === null, '第 2 次畸形刷新 → null（不落盘）');
+  assert(tokenStore.loadSession()?.refreshToken === 'good-0123456789012345', '第 2 次畸形：会话仍保留');
+  const bad3 = await authClient.getAccessToken('global');
+  assert(bad3 === null, '第 3 次畸形刷新 → null');
+  assert(tokenStore.loadSession() === null, '连续 3 次畸形 → 会话被清（触发重新登录）');
   // 401 INVALID_REFRESH_TOKEN → 清会话（强制重登）
+  tokenStore.saveSession({ version: 1, realm: 'global', refreshToken: 'good-0123456789012345' });
   globalThis.fetch = async () => ({
     ok: false, status: 401, text: async () => '{"error":{"code":"INVALID_REFRESH_TOKEN","message":"invalid"}}',
   });
   const deadRefresh = await authClient.getAccessToken('global');
   assert(deadRefresh === null, 'INVALID_REFRESH_TOKEN → null');
   assert(tokenStore.loadSession() === null, '401 后会话被清（提示重新登录）');
+  // 401 分支已复位畸形计数：重新落好 token 后连续 2 次畸形（< 上限 3）不触发清除
+  tokenStore.saveSession({ version: 1, realm: 'global', refreshToken: 'good-0123456789012345' });
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ accessToken: 'at', refreshToken: 'rt' }) });
+  const boundary1 = await authClient.getAccessToken('global');
+  const boundary2 = await authClient.getAccessToken('global');
+  assert(boundary1 === null && boundary2 === null, '计数复位后连续 2 次畸形 → null');
+  assert(tokenStore.loadSession()?.refreshToken === 'good-0123456789012345', '连续 2 次畸形不触发清除（上限 3）');
+  // 成功刷新复位畸形计数（L7）：先用一次成功刷新把计数归零（不论先前状态——边界段
+  // 结束计数=2，若成功不复位，后续 2 连畸形即 4≥3 触发清除，测试会红）→ 再 2 连畸形
+  // 不触发清除。成功后 cachedToken 有效 1h，用 Date.now 假跳过期强制走刷新路径。
+  tokenStore.saveSession({ version: 1, realm: 'global', refreshToken: 'good-0123456789012345' });
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ accessToken: 'good-at-0123456789012345', refreshToken: 'good-rt-0123456789012345' }) });
+  assert((await authClient.getAccessToken('global')) !== null, '成功刷新返回 token（计数归零）');
+  const realNowFn = Date.now;
+  Date.now = () => realNowFn() + 2 * 3600_000; // 缓存假过期 → 强制走刷新
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ accessToken: 'at', refreshToken: 'rt' }) });
+  const resetB1 = await authClient.getAccessToken('global');
+  const resetB2 = await authClient.getAccessToken('global');
+  Date.now = realNowFn;
+  assert(resetB1 === null && resetB2 === null, '成功复位后连续 2 次畸形 → null');
+  assert(tokenStore.loadSession()?.refreshToken === 'good-rt-0123456789012345', '成功复位后 2 连畸形不触发清除');
+  // 隔离回归终验：token-store 落在隔离目录（可控），真实 session.enc 字节级未变
+  assert(fs.existsSync(path.join(DATA_DIR, 'session.enc')), 'token-store 落在 PI_CINDY_DATA_DIR 隔离目录（EXPERIENCE #45 回归）', fs.readdirSync(DATA_DIR));
+  const realTokAfter = fs.existsSync(realTokPath) ? fs.readFileSync(realTokPath) : null;
+  assert((realTokAfter === null) === (realTokBefore === null), '真实 session.enc 存在性未被测试改变', { before: !!realTokBefore, after: !!realTokAfter });
+  if (realTokBefore && realTokAfter) {
+    assert(realTokAfter.equals(realTokBefore), '真实 session.enc 内容未被测试改写');
+  }
   globalThis.fetch = origFetch;
 
   // ============ 17. 被控授权门禁（revokedControllers / remoteControlEnabled，对齐 desktop dispatch.ts） ============
