@@ -36,6 +36,11 @@
 
 ### Added
 
+- **开源贡献资产补齐**（面向开源项目标准）：repo description/topics/homepage 配置（此前全空）、
+  README badges（CI / npm / license / node）、`CONTRIBUTING.md`（环境/测试纪律/commit 规范/
+  文档分工/PR 流程）、`SECURITY.md`（私有漏洞报告 + 安全边界说明）、`CODE_OF_CONDUCT.md`、
+  issue 模板（bug report / feature request，YAML forms）、PR 模板（测试证据 + 真机验证 +
+  契约影响 checklist）；GitHub Release v0.5.1 / v0.5.2 发布（此前仅 git tag 无 Release 对象）
 - **手机端 `/` palette 三源补全**（`maker:list-agent-commands` / `maker:list-agent-skills` /
   `maker:list-desktop-commands`）：此前三 channel 均不在 invoke allowlist，手机端打开 `/` 命令
   面板即 `CHANNEL_NOT_ALLOWED: maker:list-agent-commands`（parallel 拉取，任一 reject 即错误顶掉
