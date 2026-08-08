@@ -6,7 +6,7 @@ TypeScript strict + NodeNext，`ws` 依赖，构建于 @earendil-works/pi-coding
 ## Commands
 
 ```sh
-npm test             # 冒烟测试（tests/smoke.test.js，handler 层，PI_CINDY_DATA_DIR 隔离数据；必须全绿）
+npm test             # 冒烟（smoke + ownership + multi-process，PI_CINDY_DATA_DIR 隔离数据；必须全绿）
 npm run typecheck    # tsc --noEmit（strict，必须绿）
 
 # 手动验证（无 UI 环境）
@@ -27,13 +27,14 @@ PI_CINDY_DATA_DIR=/tmp/cindy-test npx pi -e . -c "/cindy-login global"
   失败保留烘焙 + 日志不阻断）。device-link REST base 在客户端内转 `wss://.../api/device-link/ws`。
   realm 一律从落盘会话派生，不硬编码。
 - **协议**：envelope 帧（hello/link-open/invoke/push/notify/ping），WS 认证 header
-  `Authorization: Bearer <token>`；invoke 走 router 62 channel allowlist；push 按订阅表 + topic 路由。
+  `Authorization: Bearer <token>`；invoke 走 router 65 channel allowlist；push 按订阅表 + topic 路由。
   位置参数/返回形状以 desktop 签名为准（见 EXPERIENCE #1/4）。
 - **ExtensionAPI ≠ ExtensionContext**：顶层 `pi` 无 `abort/compact/isIdle/modelRegistry`（静默 no-op），
   `pi.sendUserMessage` 返回 void 非 Promise。ctx 能力在 `session_start` 由 `src/runtime.ts` 捕获一次。
 - **存储**：token AES-256-GCM 存 `session.enc`（key 从 hostname+username 派生，真实边界是 0600，勿宣称加密强于本机隔离）；
   会话/消息/所有权全走 SQLite `pi-cindy.db`（node:sqlite **需要 Node ≥22.23**，package.json engines 强制，
-  WAL + busy_timeout，主库/-wal/-shm 均收敛 0600；sessions/messages/device_link_ownership 三表，所有权 CAS 单行表）；
+  WAL + busy_timeout，主库/-wal/-shm 均收敛 0600；sessions/messages/device_link_ownership/
+  cindy_instances/cindy_handoff_mailbox 五表，所有权 CAS 单行表）；
   settings JSON 原子写（跨进程锁 + pid 后缀 tmp）+ 0600，损坏 fail-closed（remote 关）；`PI_CINDY_DATA_DIR` 覆盖数据目录。
 - **多进程授权门禁**：standby 进程执行 revoke/remote-off 只写共享 settings，owner 无法被同步通知——
   持有者 2s 轮询 sweep（`client.sweepRevokedControllers`）兜底断开被撤销/禁用控制器；仲裁状态线只由
@@ -59,7 +60,7 @@ PI_CINDY_DATA_DIR=/tmp/cindy-test npx pi -e . -c "/cindy-login global"
 - 行为变更/修复/新增/删除/安全 → **只写 CHANGELOG**（按版本 Added/Changed/Fixed/Removed/Security）；
   HANDOFF 不记录变更流水。命令改动 → 更新本节 Commands。
 - 问题根因/修复/验证细节 + 踩坑与迭代经验 → **只写 EXPERIENCE.md**（踩坑编号条目 + 附录问题记录表
-  #1-56；HANDOFF 引用编号不复制正文）。
+  #1-62；HANDOFF 引用编号不复制正文）。
 - **版本号规则**：新 feature/重构升级第二位（0.1.0 → 0.2.0），bugfix 升级第三位
   （0.1.0 → 0.1.1）；版本用 git tag 锚定（未打 tag 用 commit 锚定）；目标版本写在 HANDOFF 未完成块。
 
@@ -75,6 +76,6 @@ PI_CINDY_DATA_DIR=/tmp/cindy-test npx pi -e . -c "/cindy-login global"
 
 - `docs/HANDOFF.md` — 工作背景 / 已完成 / 未完成（改代码前必读，尤其未完成块路线图）
 - `docs/CHANGELOG.md` — 版本化变更记录（版本用 git tag/commit 锚定；规划不重复，见 HANDOFF 未完成块）
-- `docs/EXPERIENCE.md` — 踩坑与迭代经验 + 问题记录附录（唯一源，编号 #1-17 + 表 #1-56；改协议/契约/链路前必读）
+- `docs/EXPERIENCE.md` — 踩坑与迭代经验 + 问题记录附录（唯一源，编号 #1-45 + 表 #1-62；改协议/契约/链路前必读）
 - `docs/DESIGN.md` — 设计方案（架构、协议、端点、数据流）
 - `LICENSE` / `NOTICE` — Apache-2.0 与上游派生声明（makecindy/cindy）；`README.md` — 用户入口文档
