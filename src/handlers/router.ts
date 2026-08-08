@@ -18,6 +18,9 @@ const ALLOWED = new Set([
   "maker:resolve-interaction", "maker:get-pending-interactions",
   "maker:set-model", "maker:set-effort", "maker:set-permission-mode", "maker:set-fast-mode", "maker:set-plan-mode",
   "maker:get-capabilities", "maker:list-available-agents",
+  // 手机端 `/` palette 三源（mobile app/sessions/[sessionId].tsx + new.tsx 并行拉取；
+  // 缺任一路即 CHANNEL_NOT_ALLOWED 报错顶掉 palette）
+  "maker:list-agent-commands", "maker:list-agent-skills", "maker:list-desktop-commands",
   // 输入队列（当前手机端会话页发送/停止/转向的唯一路径，见 mobile app/sessions/[sessionId].tsx）
   "maker:input:enqueue", "maker:input:stop", "maker:input:steer", "maker:input:get-projection",
   "maker:input:compact", "maker:input:resume", "maker:input:retry-last-error",
@@ -219,6 +222,9 @@ export async function routeInvoke(channel: string, args: unknown[]): Promise<unk
     case "maker:get-capabilities": return maker.getCapabilities(args);
     case "maker:set-plan-mode": return { ok: true };
     case "maker:list-available-agents": return maker.listAvailableAgents(args);
+    case "maker:list-agent-commands": return maker.listAgentCommands(args);
+    case "maker:list-agent-skills": return maker.listAgentSkills(args);
+    case "maker:list-desktop-commands": return maker.listDesktopCommands(args);
     case "maker:agent:status": return maker.agentStatus(args);
     case "maker:agent:binary-version": return maker.agentBinaryVersion(args);
     case "maker:auth:get-state": return maker.authGetState(args);

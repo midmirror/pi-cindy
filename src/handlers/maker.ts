@@ -676,3 +676,91 @@ export async function providerList(_args: unknown[]) {
 
 export async function usageModelPricing(_args: unknown[]) { return {}; }
 export async function apiKeyPresent(_args: unknown[]) { return { present: false }; }
+
+// ---------- 手机端 `/` palette 三源（list-agent-commands / list-agent-skills / list-desktop-commands） ----------
+//
+// mobile 契约（packages/maker-shared/src/composerPalette.ts + mobileMakerTransport.ts）：
+//   - maker:list-agent-commands → {success, commands?: MobileSlashCommand[]}，kind='agent-builtin'
+//   - maker:list-agent-skills   → {success, skills?: MobileSlashCommand[]}，kind='agent-skill'（source 'user'|'skill'）
+//   - maker:list-desktop-commands → {success, commands?: MobileSlashCommand[]}，kind='desktop'
+// 失败一律返回 {success:false,error,...}（desktop register.ts 形状），不抛 invoke error——
+// 手机端 withTransientRemoteRetry 遇 invoke reject 会重试，把确定性失败当瞬态刷屏。
+//
+// 数据源 = pi 顶层 pi.getCommands()（ExtensionAPI）：当前会话已注册的扩展命令
+// （source='extension'）+ prompt templates（source='prompt'）+ skills（source='skill'，
+// name 带 `skill:` 前缀，与 pi 侧 _expandSkillCommand 的 /skill:name 识别一致）。
+// 映射对齐 desktop 语义：agent 层能力（扩展命令）→ agent-builtin；用户/项目层
+// （templates + skills）→ agent-skill。参数 [agentKind, opts] 忽略（pi-cindy 单 agent）。
+
+interface PiSlashEntry {
+  name: string;
+  description?: string;
+  source: "extension" | "prompt" | "skill";
+  sourceInfo?: { path?: string; scope?: string };
+}
+
+function piSlashCommands(): PiSlashEntry[] {
+  try {
+    const piApi = pi();
+    const getCommands = piApi?.getCommands;
+    const rows = typeof getCommands === "function" ? getCommands() : null;
+    if (!Array.isArray(rows)) return [];
+    // 逐行过滤非对象行（修：曾整体 cast，单行 null 会让下游 .filter 抛 TypeError →
+    // 整面板 error。数据源为本机 pi API 可信，防御性过滤即可）。
+    return (rows as unknown[]).filter((r): r is PiSlashEntry => !!r && typeof r === "object");
+  } catch {
+    return []; // getCommands 不可用（老 pi）→ 空清单，不阻断 palette
+  }
+}
+
+function slashListPayload(kind: "builtin" | "skill") {
+  const rows = piSlashCommands();
+  if (kind === "builtin") {
+    const commands = rows
+      .filter((c) => c.source === "extension")
+      .map((c) => ({
+        kind: "agent-builtin" as const,
+        name: c.name,
+        description: c.description ?? "",
+      }));
+    return { success: true as const, commands };
+  }
+  const skills = rows
+    .filter((c) => c.source === "prompt" || c.source === "skill")
+    .map((c) => ({
+      kind: "agent-skill" as const,
+      name: c.name,
+      description: c.description ?? "",
+      // mobile ComposerSlashCommand.source 联合类型只有 'user' | 'skill'；pi prompt → user
+      source: c.source === "skill" ? ("skill" as const) : ("user" as const),
+      path: c.sourceInfo?.path ?? undefined,
+      scope: c.sourceInfo?.scope ?? undefined,
+      enabled: true,
+    }));
+  return { success: true as const, skills };
+}
+
+/** 手机端 `/` palette agent-builtin 源：pi 已注册扩展命令（如 /cindy-status）。 */
+export async function listAgentCommands(_args: unknown[]) {
+  try {
+    return slashListPayload("builtin");
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    return { success: false, error, commands: [] };
+  }
+}
+
+/** 手机端 `/` palette agent-skill 源：pi prompt templates + skills（发送即 /skill:name）。 */
+export async function listAgentSkills(_args: unknown[]) {
+  try {
+    return slashListPayload("skill");
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    return { success: false, error, skills: [] };
+  }
+}
+
+/** desktop 自有命令（main 进程 DesktopCommandRegistry，如 /learn）；pi-cindy 无 → 空。 */
+export async function listDesktopCommands(_args: unknown[]) {
+  return { success: true, commands: [] };
+}
