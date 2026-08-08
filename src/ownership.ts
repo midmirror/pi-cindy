@@ -415,14 +415,14 @@ export class DeviceLinkOwnershipArbiter {
       // 配合进程级仲裁器注册表（registerProcessArbiter 后进者 dispose 先进者）只有
       // 一个活仲裁器，幽灵已被停表，本路径不存在互抢死循环。
       const sameProcessLease = row.ownerPid === process.pid;
-      const handoffFresh = row.handoffTo != null && row.handoffExpiresAt != null && row.handoffExpiresAt > now;
-      const staleForTakeover = handoffFresh
-        ? false
-        : sameProcessLease
-          ? true
-          : handoffExpired
-            ? now - row.heartbeatAt > this.opts.heartbeatMs
-            : now - row.heartbeatAt > this.opts.staleMs;
+      // 未过期 handoff 已在函数前段 return（目标独占认领 / 非目标保持被动），流到这里
+      // 的交接信号只可能是过期或缺失（handoffExpired 已判定）；故同 pid 幽灵租约
+      // （扩展热重载泄漏）无有效交接信号即可立即接管，无需再判 handoffFresh。
+      const staleForTakeover = sameProcessLease
+        ? true
+        : handoffExpired
+          ? now - row.heartbeatAt > this.opts.heartbeatMs
+          : now - row.heartbeatAt > this.opts.staleMs;
       if (staleForTakeover) {
         // 持有者失效(卡死 / 崩溃 / 断电 / 同进程重载泄漏);CAS 保证多个被动实例只有一个接管成功
         const takeoverPromise = store.tryTakeover(
@@ -755,7 +755,14 @@ export function takeOverProcessArbiter(key: string): ProcessArbiterBundle | null
   return existing;
 }
 
-/** 注册本实例的 bundle（覆盖式；调用方应先 takeOver 旧 bundle）。 */
+/**
+ * 注册本实例的 bundle（覆盖式；调用方应先 takeOver 旧 bundle）。
+ *
+ * 语义注意：注册表按进程全局互斥——同进程内若存在多个 pi 会话/扩展实例（多会话
+ * 场景），后 startArbiter 者 takeOver 并 dispose 前者，最终只有最后一个活仲裁器
+ * 持有 device-link。个人桥接模型下单机单 relay 连接，此为预期 last-wins；若未来
+ * 支持同进程多会话共享 device-link，需另行设计。
+ */
 export function registerProcessArbiter(key: string, bundle: ProcessArbiterBundle): void {
   processArbiterRegistry().set(key, bundle);
 }

@@ -168,10 +168,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   assert(arbE.isOwner(), '重载后 E 成为 owner');
   assert(!arbD.isOwner(), '旧仲裁器 D 已停（不再持有）');
   assert(eventsD.filter(e => e === 'demote').length >= 1, 'D 被 dispose 触发 demote');
-  // 稳态检查：再过一段时间，E 仍持有（无互抢/翻转）
+  // 稳态检查：再过一段时间，E 仍持有（无互抢/翻转）。D 是否重新认领不能看
+  // isStandby（stop() 已置 false，恒真），改验 DB 行 owner 未被抢回 + eventsD 无新增 acquire。
+  const ownerAfterTakeover = (await store.read())?.ownerId;
+  const dEventsLen = eventsD.length;
   await sleep(250);
   assert(arbE.isOwner(), '稳态：E 持续持有（无翻转）');
-  assert(arbD.isStandby() === false || eventsD.filter(e => e === 'acquire').length === 1, 'D 未重新认领（无互抢）');
+  assert((await store.read())?.ownerId === ownerAfterTakeover, 'DB 行 owner 未被 D 抢回（无互抢）');
+  assert(eventsD.length === dEventsLen, 'D 被停后无新增 acquire（未重新认领）');
   await Promise.all([arbE.stop()]);
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
