@@ -7,6 +7,12 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - dependencies
+    ignore:
+      # typescript-eslint peer 上限 <6.1.0，TS 6/7 不兼容；@types/node 应跟随 Node 22 运行时 major
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
