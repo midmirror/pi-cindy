@@ -9,6 +9,7 @@ process.env.PI_CINDY_DATA_DIR = DATA_DIR;
 const jiti = createJiti(__filename, { interopDefault: true });
 const dbMod = jiti(path.join(__dirname, '..', 'src', 'store', 'db.ts'));
 const ownerMod = jiti(path.join(__dirname, '..', 'src', 'ownership.ts'));
+const lockMod = jiti(path.join(__dirname, '..', 'src', 'auth', 'refresh-lock.ts'));
 const {
   createSqliteOwnershipStore, DeviceLinkOwnershipArbiter,
   takeOverProcessArbiter, registerProcessArbiter, releaseProcessArbiter,
@@ -177,6 +178,51 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   assert((await store.read())?.ownerId === ownerAfterTakeover, 'DB 行 owner 未被 D 抢回（无互抢）');
   assert(eventsD.length === dEventsLen, 'D 被停后无新增 acquire（未重新认领）');
   await Promise.all([arbE.stop()]);
+
+  // ============ 跨进程 refresh 互斥锁（refresh-lock.ts） ============
+  // 并发多进程 refresh 同一 refresh token → 服务端 rotation 竞争 → 家族撤销 401。
+  // 锁保证任一时刻只一个进程刷新；锁内重读 session.enc 用新 token（见 auth-client）。
+  const lockDb = dbMod.getDb();
+  // 1) 并发互斥：临界区最大并发 = 1
+  let cMax = 0, cNow = 0, cRuns = 0;
+  const cWorker = () => lockMod.withRefreshLock(async () => {
+    cNow += 1; cMax = Math.max(cMax, cNow);
+    await sleep(25);
+    cNow -= 1; cRuns += 1;
+  });
+  await Promise.all([cWorker(), cWorker(), cWorker(), cWorker(), cWorker()]);
+  assert(cMax === 1, '并发 withRefreshLock 临界区互斥（最大并发=1）');
+  assert(cRuns === 5, '5 个并发调用全部执行');
+  assert((lockDb.prepare('SELECT owner_pid FROM refresh_lock WHERE id=1').get()).owner_pid === null, '锁用毕释放（owner 清空）');
+  // 2) 崩溃 stale 锁（>30s）可被抢占：模拟死进程残留旧锁
+  lockDb.prepare(`UPDATE refresh_lock SET owner_pid=99999, owner_label='dead', locked_at=? WHERE id=1`).run(Date.now() - 60_000);
+  let stalePid = null, staleLockedAt = null;
+  await lockMod.withRefreshLock(async () => {
+    const row = lockDb.prepare('SELECT owner_pid, locked_at FROM refresh_lock WHERE id=1').get();
+    stalePid = row.owner_pid; staleLockedAt = row.locked_at;
+  });
+  assert(stalePid === process.pid, '崩溃 stale 锁（>30s）被抢占归当前进程');
+  assert(staleLockedAt !== null, '抢占后 locked_at 更新（重新计时）');
+  // 3) 同 pid 残留锁（热重载场景）未超 stale 也可立即覆盖
+  lockDb.prepare(`UPDATE refresh_lock SET owner_pid=${process.pid}, owner_label='ghost', locked_at=? WHERE id=1`).run(Date.now() - 1000);
+  let covered = false;
+  await lockMod.withRefreshLock(async () => { covered = true; });
+  assert(covered, '同 pid 残留锁（热重载）未超 stale 也立即覆盖');
+  // 4) 他进程持锁（未 stale）时当前进程不进入临界区，待释放后接管
+  lockDb.prepare(`UPDATE refresh_lock SET owner_pid=88888, owner_label='other', locked_at=? WHERE id=1`).run(Date.now());
+  let enteredOther = false;
+  const waitP = lockMod.withRefreshLock(async () => { enteredOther = true; });
+  await sleep(150); // > LOCK_POLL_MS，未到 LOCK_TIMEOUT
+  assert(!enteredOther, '他进程持锁（未 stale）当前进程不进入临界区');
+  lockDb.prepare(`UPDATE refresh_lock SET owner_pid=NULL, locked_at=NULL WHERE id=1`).run();
+  await waitP;
+  assert(enteredOther, '他进程释放锁后当前进程接管进入临界区');
+  // 5) 释放只清自己的锁，不误清他人抢占的锁（RELEASE 按 owner_pid 定位）
+  await lockMod.withRefreshLock(async () => {
+    lockDb.prepare(`UPDATE refresh_lock SET owner_pid=77777, owner_label='racer', locked_at=? WHERE id=1`).run(Date.now());
+  });
+  const afterRacer = lockDb.prepare('SELECT owner_pid FROM refresh_lock WHERE id=1').get();
+  assert(afterRacer.owner_pid === 77777, '释放只清自己的锁，不误清他人抢占的锁');
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures ? 1 : 0);

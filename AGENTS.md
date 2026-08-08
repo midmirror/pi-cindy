@@ -37,7 +37,7 @@ PI_CINDY_DATA_DIR=/tmp/cindy-test npx pi -e . -c "/cindy-login global"
 - **存储**：token AES-256-GCM 存 `session.enc`（key 从 hostname+username 派生，真实边界是 0600，勿宣称加密强于本机隔离）；
   会话/消息/所有权全走 SQLite `pi-cindy.db`（node:sqlite **需要 Node ≥22.23**，package.json engines 强制，
   WAL + busy_timeout，主库/-wal/-shm 均收敛 0600；sessions/messages/device_link_ownership/
-  cindy_instances/cindy_handoff_mailbox 五表，所有权 CAS 单行表）；
+  cindy_instances/cindy_handoff_mailbox/refresh_lock 六表，所有权 CAS 单行表、refresh 互斥锁单行表）；
   settings JSON 原子写（跨进程锁 + pid 后缀 tmp）+ 0600，损坏 fail-closed（remote 关）；`PI_CINDY_DATA_DIR` 覆盖数据目录。
 - **多进程授权门禁**：standby 进程执行 revoke/remote-off 只写共享 settings，owner 无法被同步通知——
   持有者 2s 轮询 sweep（`client.sweepRevokedControllers`）兜底断开被撤销/禁用控制器；仲裁状态线只由

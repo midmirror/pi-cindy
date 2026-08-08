@@ -1,8 +1,9 @@
 # pi-cindy HANDOFF
 
-> 2026-08-08 · 状态：**v0.5.2**（当前版本）：会话路由 + 快速接管 + 稳定性三修（热重载泄漏 /
-> 畸形 token / 死宿主堆积）+ 开源发布（npm `pi-cindy@0.5.1`，独立仓化）。冒烟 272 断言 +
-> ownership 31 + 三进程集成全绿，双门禁绿。git 独立仓化后**仅 `v0.5.1` tag 存活**，更早
+> 2026-08-09 · 状态：**v0.5.2 已发布**；工作树含未发版工作（跨进程 refresh 互斥落地，见
+> 已完成块 2026-08-09 条目）。历史：v0.5.2 会话路由 + 快速接管 + 稳定性三修（热重载泄漏 /
+> 畸形 token / 死宿主堆积）+ 开源发布（npm `pi-cindy@0.5.1`，独立仓化）。冒烟 290 断言 +
+> ownership 40 + 三进程集成全绿，双门禁绿。git 独立仓化后**仅 `v0.5.1` tag 存活**，更早
 > tag/commit（d218d60 / 690f817 / f620fd5 等）随 fresh history 丢失、不可寻址（`git cat-file` 失败）。
 > P3 双进程真机验证 ✅（2026-08-07，见已完成块）。
 
@@ -206,6 +207,17 @@
       脱敏 `<redacted>`
 - [x] 细节与断言流水见 CHANGELOG [0.5.1] / [0.5.2] / [Unreleased]（本块只留结论）
 
+### 2026-08-09 · 跨进程 refresh 互斥落地（技术债 #23/#46 清零）
+
+- [x] **跨进程 refresh 互斥**（`src/auth/refresh-lock.ts`，双层互斥）：多 pi 进程 / 热重载叠加时
+      并发 refresh 同一 refresh token → 服务端轮换竞争 → 家族撤销 401 → 误清会话。①进程内
+      promise-chain 串行（基础设施级单飞，不依赖调用方）；②进程间 SQLite 单行锁 `refresh_lock`
+      （CAS，与 ownership 同源）——不同 pid 互斥、崩溃靠 30s stale 抢占、同 pid 热重载幽灵锁
+      立即接管。**锁内重读 session.enc**（可能已被他进程轮换），绝不用进锁前陈旧 token。
+      db 不可用/锁超时跳锁 best-effort。锁表入 db DDL 第 6 表；ownership 锁语义测试 +5
+      （并发互斥最大并发=1 / 崩溃 stale 抢占 / 同 pid 热重载覆盖 / 他进程持锁释放后接管 /
+      释放只清自己锁）；冒烟 20b 段走锁内重读路径无回归（290 断言，EXPERIENCE #48）
+
 ## 未完成
 
 ### P1：会话路由真机验证清单（v0.5.0 已发布；自动化已覆盖握手，真机待跑）
@@ -220,10 +232,6 @@
 
 ### 技术债（随版本消化）
 
-- [ ] **跨进程 refresh 互斥**（EXPERIENCE #23/#45 遗留）：多 pi 进程/热重载叠加时并发 refresh
-      同一 refresh token → 服务端轮换竞争 → 家族撤销 401 → clearSession 登出。单机单实例不受
-      影响；需 refresh 前跨进程锁（文件锁/SQLite 行锁），后到者等锁后重读 session.enc 再用新
-      token 刷新。
 - [ ] **本地输入队列 DB 快照**（desktop issue #761）：pi-cindy 输入队列为内存态，扩展重载/进程重启即清空；
       desktop 有 DB 持久化输入队列快照。手机端依赖 get-projection 重拉，快照化后重启不丢队列态。
       当前为已知局限（v0.5.0 范围外）。
@@ -276,6 +284,7 @@ grep -r "endpoint" ~/Library/Application\ Support/cindy/logs/ 2>/dev/null | head
     ├── handoff.ts        # ← 定向接管让位/认领逻辑
     ├── auth/auth-client.ts
     ├── auth/loopback.ts  # ← RFC 8252 loopback 回调（callbackUrl 为空时的登录回落）
+    ├── auth/refresh-lock.ts # ← 跨进程 refresh 互斥锁（双层：进程内串行 + SQLite 单行锁）
     ├── device-link/client.ts
     ├── handlers/router.ts  # ← invoke 路由（65 channel allowlist + SESSION_LOCAL 宿主路由）
     ├── handlers/{sessions,messages,maker,system,fs-browse}.ts

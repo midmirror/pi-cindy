@@ -1,6 +1,8 @@
 /**
  * SQLite 数据层 —— 单例 + schema DDL。
- * 对齐 desktop localDb schema（裁剪：只留 sessions / messages / device_link_ownership 三表）。
+ * 对齐 desktop localDb schema（裁剪：只留 sessions / messages / device_link_ownership 三表；
+ * 其余为 pi 特有表：cindy_instances 实例心跳 / cindy_handoff_mailbox 定向接管邮箱 /
+ * refresh_lock 跨进程 refresh 互斥锁（认证基础设施，见 src/auth/refresh-lock.ts））。
  * node:sqlite 内置（Node 22.23+，零原生依赖）；WAL 多进程并发读安全，busy_timeout 处理写锁竞争。
  *
  * 兼容性：node:sqlite 自 Node 22.5 引入（22.23 起稳定），老版本不存在该内建模块。
@@ -89,6 +91,12 @@ CREATE TABLE IF NOT EXISTS cindy_handoff_mailbox (
   UNIQUE(session_id, client_id)
 );
 CREATE INDEX IF NOT EXISTS idx_mailbox_session_status ON cindy_handoff_mailbox(session_id, status);
+CREATE TABLE IF NOT EXISTS refresh_lock (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  owner_pid INTEGER,
+  owner_label TEXT,
+  locked_at INTEGER
+);
 `;
 
 let db: DatabaseSyncType | null = null;
