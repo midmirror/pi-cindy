@@ -4,7 +4,7 @@
 > 过时条目 ~~删除线~~ + 日期。来源：三轮评审/真机验证沉淀（原 ISSUES.md 经验教训 #1-13 迁移于此）。
 
 **文档分工**：
-- 附录「问题记录」 = 根因/修复/验证表（#1-61，原 ISSUES.md 并入）
+- 附录「问题记录」 = 根因/修复/验证表（#1-62，原 ISSUES.md 并入）
 - `CHANGELOG.md` = 版本化变更流水（按版本 Added/Changed/Fixed/...）
 - `HANDOFF.md` = 交付状态（工作背景/已完成/未完成）
 - 本文件 = **可迁移的踩坑 + 迭代经验**（为什么 / 怎么避免）
@@ -360,6 +360,75 @@ ForInstance(host)`；host 已空 → 直接标 archived。当前进程会话 hos
 pi 重启 resume 由 tracker session_start 重新激活。诊断：查 `sessions` 的 status + host 分布
 对比 `cindy_instances` 活实例。
 
+### 44. 手机端 `/` palette 是三 channel 并行拉取，缺一路即 CHANNEL_NOT_ALLOWED 顶掉整个命令面板
+
+真机复现：手机端打开 `/` 命令面板直接显示 `channel not allowed maker:list-agent-commands`。
+根因：`[sessionId].tsx` / `new.tsx` 用 `Promise.all` 并行拉 `list-agent-commands` +
+`list-agent-skills`（+ sessionId 页还有 `list-desktop-commands`），三路全是 invoke channel
+——任一 reject（CHANNEL_NOT_ALLOWED 是 invoke error，不是 `{success:false}` 响应）→
+withTransientRemoteRetry 重试 + palette 错误文案顶掉缓存行。契约（composerPalette.ts）：
+builtin=`{kind:'agent-builtin',name,description}`、skill=`{kind:'agent-skill',name,description?,
+source:'user'|'skill',path?,scope?,enabled?}`、desktop=`{kind:'desktop',...}`；失败必须返回
+`{success:false,error,...}` 而非抛 invoke error（invoke reject 会触发重试刷屏）。
+
+**方法**：数据源用 pi 顶层 `pi.getCommands()`（ExtensionAPI 同步方法，返回当前会话已注册
+extension 命令 + prompt templates + skills，信任/重载状态与 pi 一致——比自研扫目录准）：
+extension→agent-builtin；prompt+skill→agent-skill（pi prompt 映射 source='user'，skill 映射
+'skill'，名保留 `skill:` 前缀对齐 pi `_expandSkillCommand` 的 /skill:name 识别）；desktop 空清单
+（pi-cindy 无 main 进程命令）。getCommands 缺失/抛错（老 pi）→ 容错空清单 success:true，
+手机端得空面板而非错误。（问题记录 #62）
+
+### 45. 测试隔离只覆盖了 SQLite，token-store 硬编码真实路径 —— 每次 npm test 删真实登录态
+
+用户报“每次启动 pi 登录态都丢，需重新登录”。排查 relay-debug.log 无 auth 痕迹（auth 本不
+打日志），但发现冒烟测试 20b 段（token 防御校验）的 logout/saveSession/畸形/401 全链路操作
+作用在**真实 `~/.pi/cindy-sync/session.enc`**：token-store.ts 的 DIR 硬编码，不走
+`PI_CINDY_DATA_DIR`（db.ts/session-store 都走，唯独 token 漏网）；测试文件头注释宣称
+“store 隔离”实际只有 SQLite 隔离。真实时间线：17:51 登录成功 → 17:54 跑测试 → 设备离线 →
+session.enc 消失。同理 dbg.ts 也硬编码日志路径，测试进程把 mock 端点（auth-cn.test）日志
+写进真实 relay-debug.log，干扰排查（日志里 16:17/17:42/17:54 的 test 端点行全是测试）。
+
+**方法**：① token-store.ts DIR 改 `PI_CINDY_DATA_DIR ?? ~/.pi/cindy-sync`（与 db.ts 同源），
+测试隔离目录内自由写删 session.enc；② dbg.ts 同样尊重 PI_CINDY_DATA_DIR（测试日志不再
+污染真实）；③ auth-client refresh 全路径补 dbgLog（refresh ok / malformed n/3 / 401
+clearing session / failed）——此前 clearSession 无任何日志，删因只能靠猜；④ 冒烟测试加
+隔离回归断言：8 段快照真实 session.enc 字节，20b 段尾比对（存在性 + 内容），任何写/删
+即失败。教训：**“隔离”是每类存储的承诺，不是目录的一个开关**——新增持久化路径时必须
+同步检查测试是否可达真实路径（db.ts / token-store / dbg.ts / settings-store 四处同源）。
+
+### 46. review-swarm 四审二轮：高置信度问题清单与落地（含契约对证参考仓结论）
+
+v0.5.2 未提交变更经 review-swarm 四路审阅（意图回归/安全隐私/性能可靠/契约覆盖）后，
+高置信度问题全部修复，均在本轮：
+
+- **savePair 不复位畸形计数**（M1）：计数仅成功/401/登出复位，登录/换码入口（savePair）
+  漏——旧 streak 残留时重登后首刷畸形即误触上限清掉新会话。修：savePair 复位计数。
+  教训：**模块级状态计数器的复位点必须与计数增长点同源枚举**（增长在 refresh 闭包，
+  复位却散落四处，漏一处即成隐性状态泄漏）。
+- **savePair 不 bump cacheGeneration**（L6，同进程 refresh 竞态）：登录与在途刷新并发时，
+  旧刷新完成会覆盖新会话。修：savePair bump cacheGeneration（与 logout 同语义）。
+  跨进程版本仍开放（未完成块：refresh 互斥）。
+- **畸形×3 清会话不清内存缓存**（L1）：与 401 分支不对称。实际无服务窗口（刷新只在缓存
+  过期后发起，×3 时缓存必已过期），纯一致性收口。修：置空 cachedToken/cachedExp。
+- **dbgLog 失败分支打 err.message**（L3）：AuthApiError.message = 服务端响应体前 200 字符，
+  错误响应若回显请求体（refreshToken/deviceId 在 POST body 里）会泄进 relay-debug.log。
+  修：只打 code/status 或错误类型。教训：**日志字段要先问“这段文本哪来的”，响应体
+  回显是 token 泄密常见路径**。
+- **palette 行级零校验**（L4）：getCommands 返回行整体 cast，单行 null 致 .filter TypeError
+  → 整面板 error。修：逐行过滤非对象。
+- **测试路径硬编码**（L5）：真实 session.enc 快照路径硬编码 `~/.pi/cindy-sync`，DIR 逻辑
+  一旦迁移快照静默校验错路径恒过。修：token-store 导出 DEFAULT_DIR，测试同源引用。
+  教训：**测试里“真实路径”必须从被测模块导出，不能手抄**。
+- **契约对证（M2）结论：无代码改动**。参考仓
+  `/home/mellow/文档/codes/github/cindy`：`ComposerSlashCommand.scope?: string` 是未定型
+  字符串（非联合），pi 的 user/project/temporary 透传安全；`source: 'user'|'skill'` 联合与
+  prompt→user 映射一致；三源结果形状 `{success,error?,commands?/skills?}` 与实现吻合。
+- 冒烟断言：260→285（palette +13、畸形 +9、隔离 +3；null 行 +2、成功复位 +3 在本轮）。
+  未落地项：畸形计数无时间窗（L2，review 二轮提议）——刷新节奏约每小时一次，3 连 ≈ 持续
+  故障，跨天累计需服务器每次刷新窗口都畸形，概率低；加窗属设计取舍，暂不改，留作已知局限。
+  multi-process.test.js 偶发超时（场景2 接管 ≤2s 计时敏感，机器负载下 flake，standalone
+  重跑全绿）——非本 diff 引入，未处理。
+
 ### 47. 子 agent（Agent 工具）会话：独立 runner 重新实例化扩展 + 仲裁器劫持
 
 pi-subagents 用 `createAgentSession` + `SessionManager.inMemory()` 在主进程内建子会话，
@@ -373,11 +442,11 @@ SDK 子会话；配置 `persistSession` 的自定义 agent 除外，接受漏判
 
 ---
 
-## 附录：问题记录（原 ISSUES.md #1-61）
+## 附录：问题记录（原 ISSUES.md #1-62）
 
 > 2026-08-06 · ISSUES.md 已删除并入本文件。问题表为历史快照（根因/修复/验证），
-> 教训类内容见上文踩坑 #1-25；本附录保留细节供回溯。
-> 2026-08-07 · 追加 #57-61（会话路由 v0.5.0）。
+> 教训类内容见上文踩坑 #1-45；本附录保留细节供回溯。
+> 2026-08-07 · 追加 #57-61（会话路由 v0.5.0）。2026-08-08 · 追加 #62（palette，见踩坑 #44）。
 
 # pi-cindy 问题与经验记录
 
@@ -526,17 +595,15 @@ SDK 子会话；配置 `persistSession` 的自定义 agent 除外，接受漏判
 | 59 | **邮箱清理顺序** | clearHostAndArchiveForInstance 必须先标邮箱 failed 再清 host（子查询依赖 host 旧值）；反序 pending 行永久滞留（plan 稿代码即反序，已修） |
 | 60 | **合成投影形状** | 复用现有 inputProjection 零新字段；get-projection 只读合成（不落邮箱不接管）；chatMessage 必须透传否则 mobile isQueuedRemoteMessage 过滤整段队列 |
 | 61 | **集成测试 worker stdin 解析** | `split(/ (.+)/)` 吞剩余整串 → sid 带空格 INVALID_PARAMS → worker 未捕获异常退出 → 场景静默失败；改先切前缀再按首空格分 |
+| 62 | **手机端 `/` palette CHANNEL_NOT_ALLOWED** | 三源 channel（list-agent-commands/list-agent-skills/list-desktop-commands）不在 invoke allowlist，Promise.all 任一 reject 即错误顶掉面板 | 用 pi.getCommands() 映射三源（extension→builtin；prompt+skill→skill）；失败容错空清单，契约形状对齐 composerPalette.ts | 冒烟 palette 断言 +11（三源形状 + getCommands 缺失/抛错容错）；typecheck 绿 |
 
 ---
 
 ## 未修（有意保留）
 
-| 问题 | 原因 | 状态 |
-|---|---|---|
-| ~~notify 能力位门禁~~ | ~~常量在未检出子模块不可得~~ | ✅ 2026-08-07 检出 cindy-protocol 子模块获值 `'notify'`，client.notify 已加 capability gate（见踩坑 #28） |
-| ~~controller 撤销/远程禁用门禁~~ | 中置信度 finding | ✅ 2026-08-07 按 desktop revokedControllers + remoteControlEnabled 语义补全（settings-store + link-open/subscribe/invoke 三入口 + `/cindy-revoke|restore|remote` 命令，见踩坑 #27/#28） |
-| request-code/verify-code 缺 `locale` 参数 | 已补：requestEmailCode/requestBindingCode 带 locale + authorize `ui_locale`（参考仓 SUPPORTED_LOCALES，`CINDY_LOCALE`/LANG 解析，缺省 en） | 已修 |
-| ~~hello-ack `serverProtocolVersion` 未校验~~ | 低严重度 | ✅ 2026-08-07 对齐参考 client.ts 防御性二道闸：mismatch → 拒上线 + protocolMismatch 标志停重连（server 实际 v1 = PROTOCOL_VERSION，校验不误伤） |
+> ~~2026-08-08 · 整表已全部解决，表删除~~：notify 能力位门禁（见踩坑 #28）、controller 撤销/
+> 远程禁用门禁（见踩坑 #27/#30）、request-code/verify-code locale（CHANGELOG v0.2.0）、
+> hello-ack serverProtocolVersion 校验（CHANGELOG v0.4.0）。详情见对应条目/CHANGELOG，正文不再引用。
 
 ---
 ---

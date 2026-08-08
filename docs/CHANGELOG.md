@@ -1,8 +1,10 @@
 # Changelog
 
-版本锚定 git tag：`v0.1.0`（含 pi-cindy 全量代码 + 文档修正的完整可复核快照）。规划不在此记录（见 HANDOFF 未完成块）。
+> 2026-08-08 · 独立仓化（fresh history）后**仅 `v0.5.1` tag 存活**；v0.1.0 / v0.2.0 / v0.5.0 的
+> tag 与全部旧 commit 随历史重写丢失（`git cat-file` 不可寻址），旧版本标题中的 commit 锚定
+> 仅供参考。规划不在此记录（见 HANDOFF 未完成块）。
 
-## [Unreleased] — 2026-08-07 · 开源发布准备
+## [Unreleased] — 2026-08-08 · 开源发布准备 + 稳定性跟进
 
 ### Fixed
 
@@ -18,7 +20,27 @@
   冒烟 19.7 +10（独立子 runner 模拟：不落库/不占 activeId/不推/消息不落主会话/shutdown
   不归档不清 activeId/主会话消息回归）
 
+- **冒烟测试删真实登录态**（EXPERIENCE #45）：`token-store.ts` 硬编码 `~/.pi/cindy-sync`，
+  不走 `PI_CINDY_DATA_DIR`——冒烟测试 20b 段（logout → saveSession → 畸形×3 → 401）的
+  clearSession/saveSession 全部作用在真实 `session.enc`，**每次 `npm test` 删真实登录态**，
+  pi 重启即“登录态丢了需重新登录”。修复：token-store 与 db.ts 同源尊重 `PI_CINDY_DATA_DIR`；
+  dbg.ts 同步尊重（此前测试进程 mock 端点日志写进真实 relay-debug.log 污染排查）；auth-client
+  refresh 全路径补 dbgLog（ok / malformed n/3 / 401 clearing session / failed）——clearSession
+  首次可查因；冒烟加隔离回归断言（真实 session.enc 字节快照前后比对，路径同源引用
+  token-store.DEFAULT_DIR）。冒烟隔离回归断言 +3
+
 ### Added
+
+- **手机端 `/` palette 三源补全**（`maker:list-agent-commands` / `maker:list-agent-skills` /
+  `maker:list-desktop-commands`）：此前三 channel 均不在 invoke allowlist，手机端打开 `/` 命令
+  面板即 `CHANNEL_NOT_ALLOWED: maker:list-agent-commands`（parallel 拉取，任一 reject 即错误顶掉
+  palette）。数据源 = pi 顶层 `pi.getCommands()`（ExtensionAPI）：扩展命令（source='extension'）→
+  agent-builtin；prompt templates + skills → agent-skill（pi prompt 映射 source='user'，skill 映射
+  'skill'，名保留 `skill:` 前缀对齐 pi `_expandSkillCommand` 的 /skill:name 识别）；desktop 命令
+  返回空清单（pi-cindy 无 main 进程命令）。失败容错为空清单（success:true）——getCommands 缺失/
+  抛错（老 pi）时手机端得空面板而非错误。契约对齐 mobile composerPalette 三源形状
+  （packages/maker-shared/src/composerPalette.ts）；冒烟 palette 断言 +11（三源形状 +
+  getCommands 缺失/抛错容错空清单）
 
 - **已发布 npm**：`pi-cindy@0.5.1` 公开（`npm view` 可见，tarball 108 文件）；pi.dev 包市场自动抓取（`pi-package` keyword）；本地验证 `pi -e npm:pi-cindy` 安装加载正常（与 symlink 本地版同名工具冲突属预期，正式安装前需移除旧链接）
 - `LICENSE`（Apache-2.0）+ `NOTICE`（上游 makecindy/cindy 派生声明）
@@ -39,6 +61,43 @@
 ### Security
 
 - HANDOFF 内嵌真实 userId 脱敏（`<redacted>`）
+
+## [0.5.2] — 2026-08-08 · review-swarm 跟进修复
+
+### Fixed
+
+- **连续畸形 token 响应累计清除**（修：仅「跳过落盘」→ 服务端持续异常时每轮刷新全量往返拿
+  垃圾、无限静默失败且无重登提示）：`getAccessToken` 新增连续畸形计数
+  （`consecutiveMalformedCount`），单次畸形仍保留好 token 不落盘；连续 3 次 → 同 401 处理
+  clearSession 强制重登；成功刷新 / 401 / 登出均复位计数。冒烟畸形计数断言 +6（第 1/2 次畸形
+  保留会话、第 3 次清会话、401 复位后 2 连畸形不触发清除）
+- **review 二轮跟进修复**（EXPERIENCE #46，review-swarm 四审结论落地）：
+  - `savePair`（登录/换码入口）复位畸形计数 + bump cacheGeneration——旧 streak 残留会让
+    重登后首刷畸形即误触上限清新会话；登录与在途刷新并发时旧刷新会覆盖新会话
+  - 畸形×3 清除路径同步清 cachedToken/cachedExp（与 401 分支对称，状态一致性收口）
+  - refresh failed 日志脱敏：只打 code/status 或错误类型，不打 err.message（AuthApiError
+    含服务端响应体，错误回显请求体时 token/deviceId 泄进 relay-debug.log）
+  - palette 行级防御：getCommands 返回行过滤非对象（单行 null 曾致整面板 error）；
+    冒烟 null 行过滤 +2 断言
+  - token-store 导出 `DEFAULT_DIR`，冒烟真实 session.enc 快照路径同源引用（防 DIR 逻辑
+    迁移后快照静默校验错路径）
+  - 冒烟补成功刷新复位计数测试（Date.now 假跳过期强制走刷新，+3 断言）
+  - 契约对证参考仓 mobile：`ComposerSlashCommand.scope?: string` 未定型联合，pi 的
+    user/project/temporary 透传安全；`source: 'user'|'skill'` 映射与 prompt→user 一致；
+    三源结果形状 `{success,error?,commands?/skills?}` 吻合——M2 无代码改动
+- **isValidTokenPair 守卫类型收窄**（修：`pair is TokenPair` 声称校验了必填的 membership
+  但从未检查——类型撒谎，未来消费方 `pair.membership.id` 会 TypeError）：新增 `AuthTokenPair`
+  （仅 accessToken/refreshToken 两个实际消费字段），守卫返回类型收窄为该形状；注释明确
+  membership 不在守卫范围（本仓无消费方 + 刷新/换码响应可能不含）；`refreshToken()` / `savePair` /
+  登录路径 cast 同步收窄
+- **runTick 死分支清理**（修：未过期 handoff 已在 runTick 前段 return，`handoffFresh ? false`
+  永不可达）：`staleForTakeover` 简化为 sameProcessLease → handoffExpired → staleMs 三级判定，
+  注释说明流到该处的交接信号只可能过期/缺失
+- **仲裁器注册表 last-wins 语义注释**：`registerProcessArbiter` 文档注明注册表按进程全局互斥——
+  同进程多 pi 会话时后 startArbiter 者接管，最终单活仲裁器持有 device-link；个人桥接模型下
+  为预期行为
+- **ownership 测试断言修正**（修：`arbD.isStandby() === false` 恒真——stop() 已置 standby
+  false，第二项死代码）：改验 DB 行 owner 未被抢回 + eventsD 无新增 acquire
 
 ## [0.5.1] — 2026-08-07 · review-swarm 四审 H/M 修复
 
@@ -90,7 +149,7 @@
 - 测试：冒烟 218→241 断言（26b H1/M4、H2 形状、M1 重排、M2 shutdown 清邮箱、M3 激活消费+
   TTL、M5 硬上限）
 
-## [0.5.0] — 2026-08-07 · tag v0.5.0
+## [0.5.0] — 2026-08-07 · 未打 tag（旧仓锚定已失效）
 
 ### Added
 
@@ -234,7 +293,7 @@
   仲裁器引用（stopArbiter 置 null 后仍可复检）；session_shutdown reason quit/reload →
   stopArbiter 释放持有权（同伴 ≤5s 接管）；命令路径 stale ctx 守卫（safeSetStatus）
 
-## [0.2.0] — 2026-08-06 · 锚定 tag `v0.2.0`（commit `690f817`；P1 真机补测全过）
+## [0.2.0] — 2026-08-06 · 旧仓 tag `v0.2.0`（commit `690f817`，已不可寻址；P1 真机补测全过）
 
 ### Added
 
@@ -275,7 +334,7 @@
   expandHome + stat → `{kind: dir|file|missing, resolvedPath}`，对齐 desktop fsBrowse 契约，
   该 channel 在 device-link allowlist 内设计上即允许被控端执行）；测试 119→125 断言
 
-## [0.1.0] — 2026-08-06 · 锚定 tag `v0.1.0`
+## [0.1.0] — 2026-08-06 · 旧仓 tag `v0.1.0`（已不可寻址）
 
 首个可交付版本（早期版本号从 0.1 起）：扩展骨架 + 三轮评审/真机修复全部落地，`npm test` + `npm run typecheck`（strict）双门禁绿。
 

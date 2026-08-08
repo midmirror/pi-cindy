@@ -1,8 +1,9 @@
 # pi-cindy HANDOFF
 
-> 2026-08-07 · 状态：**v0.5.0（已打 tag）**：会话路由 + 快速接管（手机消息路由到会话宿主、
-> 定向接管、DB 邮箱、死宿主心跳清理）；冒烟 218 断言 + 三进程集成握手全绿，双门禁绿。
-> v0.3.0 已打 tag（commit `d218d60`）。v0.4.0 未打 tag（技术债清零 + 旧 JSON 清理）。
+> 2026-08-08 · 状态：**v0.5.2**（当前版本）：会话路由 + 快速接管 + 稳定性三修（热重载泄漏 /
+> 畸形 token / 死宿主堆积）+ 开源发布（npm `pi-cindy@0.5.1`，独立仓化）。冒烟 272 断言 +
+> ownership 31 + 三进程集成全绿，双门禁绿。git 独立仓化后**仅 `v0.5.1` tag 存活**，更早
+> tag/commit（d218d60 / 690f817 / f620fd5 等）随 fresh history 丢失、不可寻址（`git cat-file` 失败）。
 > P3 双进程真机验证 ✅（2026-08-07，见已完成块）。
 
 ## 工作背景
@@ -10,7 +11,7 @@
 - **项目目标**：Pi extension 模拟 Cindy Desktop 被控端（device-link sync），使 Cindy 手机端可浏览/操作 Pi 会话（会话列表、选模型、发消息、停止/转向、压缩等）。
 - **关键决策**：模拟 Desktop（不改手机端）；SQLite 存储（v0.3.0 起，node:sqlite，此前为 JSON 文件存储）；PKCE 登录；invoke allowlist 精简；落库与权威推送只在 tracker 完成；协议契约以手机端消费方源码为准（详见 `AGENTS.md` Must-know，勿推翻）。
 - **与上游对应关系**：参考实现 = cindy 开源仓库（desktop 端 `apps/desktop` + `packages/device-link` + `packages/maker-shared`）；手机端契约以 mobile 侧 normalize/validate 函数为准。端点、信封格式、hello、WS 路径、push 频道名均对齐（参考仓本机路径不固定，见下文端点查找方法）。
-- **文档分工**：本文件 = 交付状态与待办；`EXPERIENCE.md` = 踩坑与迭代经验 + 问题记录附录（唯一源，#1-25 + 表 #1-56）；`CHANGELOG.md` = 版本化变更流水。
+- **文档分工**：本文件 = 交付状态与待办；`EXPERIENCE.md` = 踩坑与迭代经验 + 问题记录附录（唯一源，#1-45 + 表 #1-62）；`CHANGELOG.md` = 版本化变更流水。
 
 ## 已完成
 
@@ -165,10 +166,49 @@
 - [x] **死宿主会话清理补洞**（EXPERIENCE #43）：sweep 按会话反查（host 不在活实例/已空 →
       归档），手机端列表不再堆积死会话。真机：12 active → 1 active（仅当前活进程会话）；
       冒烟 249→252 断言
+- [x] **手机端 `/` palette 三源补全**（EXPERIENCE #44）：手机 `/` 命令面板报
+      `channel not allowed maker:list-agent-commands`——三源 channel（list-agent-commands /
+      list-agent-skills / list-desktop-commands）全缺 allowlist，Promise.all 任一 reject 即错误
+      顶掉面板。数据源 = pi.getCommands()（extension→agent-builtin；prompt+skill→agent-skill，
+      skill 名保留 `skill:` 前缀；desktop 空清单），失败容错空清单不报错。冒烟 palette 断言 +11
+
+### 2026-08-08 · 登录态丢失根因修复（EXPERIENCE #45）
+
+- [x] **根因**：token-store.ts 硬编码 `~/.pi/cindy-sync`，不走 PI_CINDY_DATA_DIR——冒烟测试
+      20b 段的 logout/畸形/401 全链路 clearSession 作用在**真实 session.enc**，每次 npm test
+      删真实登录态；dbg.ts 同病（测试日志污染真实 relay-debug.log）。
+- [x] **修复**：token-store + dbg.ts 均尊重 PI_CINDY_DATA_DIR（与 db.ts 同源）；auth-client
+      refresh 全路径 dbgLog（clearSession 首次可查因）；冒烟加真实 session.enc 字节快照隔离
+      回归断言（路径同源引用 token-store.DEFAULT_DIR）；冒烟隔离断言 +3 + typecheck 双门禁绿。
+- [x] 遗留：跨进程并发 refresh 家族撤销（EXPERIENCE #23 设计风险）未治——单机单实例不受影响，
+      多 pi 窗口/热重载叠加时仍可能触发，需跨进程 refresh 互斥（见未完成）。同进程版本（登录与
+      在途刷新并发）已在 review 二轮用 savePair bump cacheGeneration 关闭（EXPERIENCE #46）
+
+### 2026-08-08 · review-swarm 四审跟进 + 开源发布（v0.5.1 / v0.5.2，npm 已发布）
+
+- [x] **v0.5.1 四审 H/M 修复**：H1 交接过期回落清 handoff（renew CASE 条件清）、H2 路由响应
+      形状（非投影类回 `{ok:true}`，死宿主抛 NOT_FOUND）、M1 get-projection 错误可见（unhosted
+      → NOT_FOUND）、M2 优雅关闭清邮箱、M3 邮箱滞留闭环（激活消费 + 10min TTL）、M4 假活宿主
+      熔断（未认领 strike）、M5 心跳硬上限（>2×staleMs 判死）、M6 集成测试走真实路由；冒烟
+      218→241 断言
+- [x] **v0.5.2**：连续畸形 token 累计清除（3 连 → clearSession 强制重登）、isValidTokenPair
+      守卫类型收窄（AuthTokenPair）、runTick 死分支清理、仲裁器注册表 last-wins 注释、
+      ownership 测试断言修正（去死代码）
+- [x] **v0.5.2 review 二轮**（EXPERIENCE #46，四审高置信度问题全部落地）：savePair 复位畸形
+      计数 + bump cacheGeneration（登录与在途刷新并发竞态关闭）；畸形×3 清内存缓存对称；
+      refresh failed 日志脱敏（code/status 替代响应体）；palette null 行过滤；DEFAULT_DIR 导出
+      同源引用；冒烟补成功复位 + null 行测试。契约对证参考仓（M2）：scope?: string 未定型
+      联合透传安全，三源结果形状吻合，无改动。冒烟 260→285 断言（palette +13、畸形 +9、
+      隔离 +3）
+- [x] **开源发布**：npm 发布 `pi-cindy@0.5.1`（tsconfig.build + dist + prepublishOnly 门禁 +
+      peerDeps，tarball 108 文件）；**独立仓化**（fresh history，旧仓含明文凭据历史不带入，
+      `~/.agents` 改子模块 gitlink）；LICENSE/NOTICE/README/.github CI；HANDOFF 内嵌 userId
+      脱敏 `<redacted>`
+- [x] 细节与断言流水见 CHANGELOG [0.5.1] / [0.5.2] / [Unreleased]（本块只留结论）
 
 ## 未完成
 
-### P1：会话路由真机验证清单（目标 v0.5.0，自动化测试已覆盖握手，真机待跑）
+### P1：会话路由真机验证清单（v0.5.0 已发布；自动化已覆盖握手，真机待跑）
 
 - [ ] 双 pi 进程（不同目录）+ 同一账号登录 + 手机端：设备列表 1 台、会话列表见 2 会话
 - [ ] 手机在 B 会话发消息 → ~1-2s 内 B 接管（B 窗口 `/cindy-status` 变 owner）→ B 回复回流手机
@@ -176,33 +216,17 @@
 - [ ] kill -9 B → 手机在 B 会话发消息 → ~10s 内明确报错（会话无活宿主）
 - [ ] 重启 B（resume 同会话）→ 会话复活可消息
 
-### P1：真机测试（目标 v0.2.0）**✅ 已全部完成（2026-08-06）**
-
-- [x] push 复测 / 手机端常调 channel 补全 / 双端 logout 后重登 / v0.2.0 tag
-
-> apple/email 登录未单独验证（google 已通；binding/loopback 流程已单测覆盖）——如需补验放 P3。
-
-### P2：功能补全（目标 v0.2.0）
-
-- [ ] **邮箱验证码自动填充**：无 IMAP，保持手动输入（验证码邮件送达后无法自动读取）
-- [ ] ~~端点热更新~~ ✅ 2026-08-06 已完成（见已完成块）
-- [ ] ~~loopback 回调降级~~ ✅ 2026-08-06 已完成
-- [ ] ~~binding_required 流程~~ ✅ 2026-08-06 已完成
-
-### P3：进阶功能（目标 v0.3.0+）
-
-- [x] 双进程真机验证（双 pi 进程 + 手机端设备列表/会话可见性实机确认）✅ 2026-08-07（优雅退出 4.4s / kill -9 14.1s 接管，见已完成块）
-- [x] 旧 JSON 文件人工确认后清理 ✅ 2026-08-07（用户确认直接删除；SQLite 已完全接管，无需迁移）
+> apple/email 登录未单独真机验证（google 已通；binding/loopback 单测覆盖）——需要时补验。
 
 ### 技术债（随版本消化）
 
+- [ ] **跨进程 refresh 互斥**（EXPERIENCE #23/#45 遗留）：多 pi 进程/热重载叠加时并发 refresh
+      同一 refresh token → 服务端轮换竞争 → 家族撤销 401 → clearSession 登出。单机单实例不受
+      影响；需 refresh 前跨进程锁（文件锁/SQLite 行锁），后到者等锁后重读 session.enc 再用新
+      token 刷新。
 - [ ] **本地输入队列 DB 快照**（desktop issue #761）：pi-cindy 输入队列为内存态，扩展重载/进程重启即清空；
       desktop 有 DB 持久化输入队列快照。手机端依赖 get-projection 重拉，快照化后重启不丢队列态。
       当前为已知局限（v0.5.0 范围外）。
-- [x] notify 能力位门禁 ✅ 2026-08-07（检出 cindy-protocol 子模块获值 'notify'）
-- [x] controller 撤销/远程禁用门禁 ✅ 2026-08-07（settings-store + 三入口 + 命令）
-- [x] request-code/verify-code locale 参数 ✅（v0.2.0）
-- [x] hello-ack serverProtocolVersion 校验 ✅ 2026-08-07
 
 ---
 
@@ -228,10 +252,14 @@ grep -r "endpoint" ~/Library/Application\ Support/cindy/logs/ 2>/dev/null | head
 ~/.pi/agent/extensions/pi-cindy/          # symlink
 ~/.agents/agent-configs/pi/extensions/pi-cindy/  # 实际路径
 ├── AGENTS.md             # 规范：Commands / Must-know / HANDOFF 维护规范
-├── index.ts              # 入口：5 命令 + 2 工具
-├── package.json          # scripts: test / typecheck
-├── tsconfig.json         # strict + NodeNext
-├── tests/smoke.test.js   # 79 断言冒烟测试（npm test）
+├── index.ts              # 入口：8 命令（login/logout/status/connect/disconnect/remote/revoke/restore）+ 2 工具
+├── package.json          # scripts: test / typecheck / build（prepublishOnly 门禁）
+├── tsconfig.json         # strict + NodeNext（+ tsconfig.build.json 发布编译）
+├── tests/                # npm test = smoke + ownership + multi-process
+│   ├── smoke.test.js       # 272 断言冒烟（handler 层）
+│   ├── ownership.test.js   # 仲裁/热重载/交接（31 断言）
+│   ├── multi-process.test.js # 三进程集成（真跨进程 worker）
+│   └── store-sqlite / migration / node-sqlite-probe（辅助）
 ├── docs/AGENTS.md → 见仓库根
 ├── docs/DESIGN.md        # 设计方案（架构/协议/端点/数据流）
 ├── docs/HANDOFF.md       # 本文件 — 交付状态（工作背景/已完成/未完成）
@@ -243,10 +271,18 @@ grep -r "endpoint" ~/Library/Application\ Support/cindy/logs/ 2>/dev/null | head
     ├── dbg.ts            # ← 共享排障日志（relay-debug.log）
     ├── runtime.ts        # Pi 运行态快照（ctx 能力捕获）
     ├── tracker.ts
+    ├── ownership.ts      # ← 单持有者仲裁（SQLite 单行 CAS + 定向接管 handoffTo）
+    ├── instance.ts       # ← 进程级实例 UUID + cindy_instances 心跳
+    ├── handoff.ts        # ← 定向接管让位/认领逻辑
     ├── auth/auth-client.ts
     ├── auth/loopback.ts  # ← RFC 8252 loopback 回调（callbackUrl 为空时的登录回落）
     ├── device-link/client.ts
+    ├── handlers/router.ts  # ← invoke 路由（65 channel allowlist + SESSION_LOCAL 宿主路由）
+    ├── handlers/{sessions,messages,maker,system,fs-browse}.ts
+    ├── store/db.ts       # ← SQLite（node:sqlite，WAL + busy_timeout，5 表）
     ├── store/token-store.ts
     ├── store/session-store.ts
-    └── handlers/*.ts
+    ├── store/settings-store.ts # ← 授权黑名单/全局开关（JSON 原子写 0600）
+    ├── store/handoff-store.ts  # ← DB 邮箱（cindy_handoff_mailbox）
+    └── store/migration.ts      # ← JSON→SQLite 一次性迁移
 ```
