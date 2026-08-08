@@ -1,6 +1,6 @@
 {
   "name": "pi-cindy",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Pi extension: Cindy device-link sync — mimics Cindy Desktop for mobile control",
   "license": "Apache-2.0",
   "author": "midmirror <midmirror@live.com>",
