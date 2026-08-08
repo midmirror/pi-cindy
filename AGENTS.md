@@ -8,6 +8,9 @@ TypeScript strict + NodeNext，`ws` 依赖，构建于 @earendil-works/pi-coding
 ```sh
 npm test             # 冒烟（smoke + ownership + multi-process，PI_CINDY_DATA_DIR 隔离数据；必须全绿）
 npm run typecheck    # tsc --noEmit（strict，必须绿）
+npm run lint         # eslint flat config + typescript-eslint recommended（必须绿）
+npm run coverage     # c8 smoke 基线 82% statements（CI 出报告，勿显著下降）
+npm run format       # prettier 本地可选（配置对齐现有风格；不 gate CI，勿全仓重排刷 diff）
 
 # 手动验证（无 UI 环境）
 cd ~/.agents/agent-configs/pi/extensions/pi-cindy && npx pi -e . -c "/cindy-status"   # 加载扩展 + 看状态
@@ -44,7 +47,32 @@ PI_CINDY_DATA_DIR=/tmp/cindy-test npx pi -e . -c "/cindy-login global"
 - **已定决策，勿推翻**：模拟 Cindy Desktop（不改手机端）；SQLite 存储（v0.3.0 起，node:sqlite；JSON 时代数据已清理）；
   PKCE 登录（不依赖 Electron safeStorage）；invoke allowlist 精简；落库与权威推送只在 tracker 完成。
 - **测试纪律**：链路/契约改动必须有冒烟测试覆盖（模拟 relay 帧级用例）；临时测试不持久化 = 白写。
+  冒烟断言基线 290+，改动**禁净删断言**（等价重构除外）。多进程测试（multi-process）禁固定
+  sleep 猜时序——worker 经 jiti 编译 TS 可能晚于就绪，必须等 worker 的 READY 信号再发消息
+  （CI 高负载已多次踩坑，见 CHANGELOG v0.5.2）。
 - **真机验证**：登录成功 ≠ 功能可用；必须走到业务路径（会话列表 → 会话页 → 选模型 → 发消息 → 回复回流）。
+
+## 工程门禁（自动化强制，勿绕过）
+
+- **CI 全绿 = `npm test` + `npm run typecheck` + `npm run lint` + `npm run coverage` + commitlint**
+  （`.github/workflows/ci.yml`）。禁删/弱化 CI 步骤（去 lint/coverage = 腐化）。
+- **commitlint + husky**：commit 必须 Conventional Commits；**禁 `git commit/push --no-verify` 绕过**。
+- **依赖解析**：禁 `npm ci --legacy-peer-deps` / `--force` 绕过 ERESOLVE——依赖问题应修 lock 或
+  等 dependabot；lock 只由 `npm i` 或 dependabot 生成，禁手改 package-lock.json。
+- **新依赖纪律**：typescript / @types/node 的 major 升级**禁手动**（typescript-eslint peer 上限
+  `<6.1.0`；@types/node 跟随 Node 22 运行时；dependabot 已 ignore），需显式评估；新依赖检查
+  Apache-2.0 兼容 + NOTICE 同步。
+
+## 禁止操作（腐化红线）
+
+- **禁直推 main**：分支保护（test + commitlint 必需，strict）已开，改动一律走 PR + squash merge。
+- **禁关闭/放宽分支保护、禁把 merge 策略改回 merge commit/rebase**（当前 squash-only + delete-branch）。
+- **发版固定流程**：改 CHANGELOG 版本块 → bump package.json version → `git tag vX.Y.Z` → push tag
+  （`.github/workflows/release.yml` 自动建 Release，notes 从 CHANGELOG 对应版本条目提取）。
+  **禁手建 Release、禁改 release.yml 提取逻辑**；CHANGELOG 版本条目必须与 tag 一一对应
+  （条目不匹配 = Release 空 notes）。
+- **日志安全**：禁落 token/响应体（refresh 已脱敏，防回归）；文件权限 0600 勿放宽，
+  session.enc 密钥派生逻辑勿改弱。
 
 ## HANDOFF 维护规范
 
