@@ -28,6 +28,11 @@
   refresh 全路径补 dbgLog（ok / malformed n/3 / 401 clearing session / failed）——clearSession
   首次可查因；冒烟加隔离回归断言（真实 session.enc 字节快照前后比对，路径同源引用
   token-store.DEFAULT_DIR）。冒烟隔离回归断言 +3
+- **multi-process 场景2 时序竞态修复**（CI 高负载稳定红）：B worker 经 jiti 编译 TS
+  晚于 invoke 就绪，A2 路由 `getSession` 查无 `sess-b` → `ROUTE-ERR NOT_FOUND`，A2
+  不让位、B 全程 standby 超时退出，三断言连挂。worker 增加 `READY` 信号
+  （registerInstance + createSession + arbiter 启动完成），测试 `waitOut` 后再发路由；
+  B 存活窗口 2000→4000ms。本地 12 连跑 + 高负载 8 连跑全绿
 
 ### Added
 
