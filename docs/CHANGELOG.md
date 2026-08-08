@@ -41,6 +41,13 @@
   文档分工/PR 流程）、`SECURITY.md`（私有漏洞报告 + 安全边界说明）、`CODE_OF_CONDUCT.md`、
   issue 模板（bug report / feature request，YAML forms）、PR 模板（测试证据 + 真机验证 +
   契约影响 checklist）；GitHub Release v0.5.1 / v0.5.2 发布（此前仅 git tag 无 Release 对象）
+- **工程资产第二批**（开源成熟度）：eslint（flat config + typescript-eslint recommended，
+  全仓 0 错）+ prettier（配置对齐现有风格，本地 format 可选，不 gate CI）、c8 coverage
+  脚本（smoke 套件 82% statements / 68% branches）、dependabot（npm 周更 + actions 月更，
+  ignore typescript/@types-node major——TS 7 超 typescript-eslint peer 上限）、release
+  workflow（打 v* tag 自动建 GitHub Release，notes 从 CHANGELOG 提取）、merge 策略收敛
+  squash-only + delete-branch、main 分支保护（test + commitlint 必需，strict）、husky
+  commit-msg 移除 v10 弃用头行；actions/checkout@7 + setup-node@7
 - **手机端 `/` palette 三源补全**（`maker:list-agent-commands` / `maker:list-agent-skills` /
   `maker:list-desktop-commands`）：此前三 channel 均不在 invoke allowlist，手机端打开 `/` 命令
   面板即 `CHANNEL_NOT_ALLOWED: maker:list-agent-commands`（parallel 拉取，任一 reject 即错误顶掉
