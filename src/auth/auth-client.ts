@@ -7,6 +7,7 @@ import { exec } from "node:child_process";
 import { saveSession, loadSession, clearSession } from "../store/token-store.js";
 import { getEndpoint } from "../endpoints.js";
 import { startLoopbackListener } from "./loopback.js";
+import { dbgLog } from "../dbg.js";
 import { type TokenPair } from "../types.js";
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
@@ -48,13 +49,26 @@ export class AuthApiError extends Error {
  * 返回畸形 token（真机复现 refreshToken="rt"），直接覆盖 session.enc 把好 token
  * 冲掉 → 永久 401 INVALID_REFRESH_TOKEN，只能重新登录）。真实 refresh token 是
  * 长串（JWT/opaque），<16 字符必然是垃圾，拒绝保存。
+ *
+ * 守卫只断言实际落盘/缓存消费的字段（accessToken + refreshToken），**不校验**
+ * TokenPair.membership——本仓无 membership 消费方（grep 验证），且刷新/换码响应
+ * 可能不含该字段；返回类型收窄为 AuthTokenPair 而非 TokenPair，避免类型撒谎。
  */
-export function isValidTokenPair(pair: unknown): pair is TokenPair {
+export interface AuthTokenPair {
+  accessToken: string;
+  refreshToken: string;
+}
+export function isValidTokenPair(pair: unknown): pair is AuthTokenPair {
   if (!pair || typeof pair !== "object") return false;
   const p = pair as Record<string, unknown>;
   return typeof p.accessToken === "string" && p.accessToken.length >= 16
     && typeof p.refreshToken === "string" && p.refreshToken.length >= 16;
 }
+
+/** 连续畸形刷新响应计数：单次畸形只跳过落盘；达到上限判定「服务端持续异常」→ 清会话强制重登。 */
+let consecutiveMalformedCount = 0;
+/** 连续畸形响应上限（配合 isValidTokenPair）。 */
+const MALFORMED_RESPONSE_LIMIT = 3;
 
 async function apiFetch(baseUrl: string, path: string, opts: {
   method?: string; body?: unknown; token?: string; timeoutMs?: number;
@@ -100,8 +114,24 @@ export async function getAccessToken(realm: "cn" | "global" = "global"): Promise
       const pair = await refreshToken(r, session.refreshToken);
       if (gen !== cacheGeneration) return null; // 期间已登出：不写回
       // 畸形响应不落盘（见 isValidTokenPair）：保留现状，靠重新登录恢复
-      if (!isValidTokenPair(pair)) return null;
+      if (!isValidTokenPair(pair)) {
+        // 单次畸形只跳过落盘（保留好 token，等下次刷新）；连续 N 次 → 服务端持续异常，
+        // 同 401 处理：清会话强制重新登录（否则每轮刷新都全量往返拿垃圾、静默失败无恢复路径）。
+        consecutiveMalformedCount += 1;
+        dbgLog(`auth refresh malformed (${r}) ${consecutiveMalformedCount}/${MALFORMED_RESPONSE_LIMIT} — keep session`);
+        if (consecutiveMalformedCount >= MALFORMED_RESPONSE_LIMIT) {
+          consecutiveMalformedCount = 0;
+          // 与 401 分支对称：内存缓存一并失效。此时缓存必已过期（刷新只在缓存过期后
+          // 才发起），清空是状态一致性收口，不改变既有服务窗口。
+          cachedToken = null; cachedExp = 0;
+          dbgLog(`auth refresh malformed x${MALFORMED_RESPONSE_LIMIT} (${r}) — clearing session (server persistently broken)`);
+          clearSession();
+        }
+        return null;
+      }
+      consecutiveMalformedCount = 0; // 成功刷新：计数复位
       saveSession({ version: 1, realm: r, refreshToken: pair.refreshToken });
+      dbgLog(`auth refresh ok (${r})`);
       cachedToken = pair.accessToken;
       try {
         const payload = JSON.parse(Buffer.from(pair.accessToken.split(".")[1], "base64url").toString());
@@ -115,7 +145,18 @@ export async function getAccessToken(realm: "cn" | "global" = "global"): Promise
       // 瞬态网络错误（fetch failed / timeout）不清——避免断网误登出。
       if (err instanceof AuthApiError
         && (err.code === "INVALID_REFRESH_TOKEN" || err.statusCode === 401)) {
+        consecutiveMalformedCount = 0; // 会话已清，计数归零
+        dbgLog(`auth refresh 401 (${r}) code=${err.code} status=${err.statusCode} — clearing session (token family revoked)`);
         clearSession();
+      } else {
+        // 只打 code/status 或错误类型，不打 err.message——AuthApiError.message 是服务端
+        // 响应体前 200 字符，错误响应若回显请求体（含 refreshToken/deviceId）会泄进
+        // relay-debug.log（EXPERIENCE #46）。
+        if (err instanceof AuthApiError) {
+          dbgLog(`auth refresh failed (${r}) code=${err.code} status=${err.statusCode}`);
+        } else {
+          dbgLog(`auth refresh failed (${r}) type=${(err as Error)?.constructor?.name ?? "unknown"}`);
+        }
       }
       return null;
     }
@@ -140,13 +181,13 @@ export function resolveSystemLocale(): string {
   return "en";
 }
 
-async function refreshToken(realm: "cn" | "global", refreshToken: string): Promise<TokenPair> {
+async function refreshToken(realm: "cn" | "global", refreshToken: string): Promise<AuthTokenPair> {
   const baseUrl = getEndpoint(realm, "authApiBaseUrl");
   const deviceId = getDeviceId();
   return apiFetch(baseUrl, "/api/auth/refresh", {
     method: "POST",
     body: { refreshToken, deviceId },
-  }) as Promise<TokenPair>;
+  }) as Promise<AuthTokenPair>;
 }
 
 /** 拉取当前区域的可用登录方式（social 列表 + email/phone 开关）。 */
@@ -155,11 +196,13 @@ export async function getProviders(realm: "cn" | "global"): Promise<ProviderConf
   return await apiFetch(baseUrl, "/api/auth/providers") as ProviderConfig;
 }
 
-function savePair(realm: "cn" | "global", pair: TokenPair) {
+function savePair(realm: "cn" | "global", pair: AuthTokenPair) {
   // 登录/换码响应同样防御性校验：畸形 pair 不落盘（防止 session.enc 被垃圾 token 冲掉）
   if (!isValidTokenPair(pair)) {
     throw new AuthApiError("INVALID_TOKEN_RESPONSE", 502, "auth 响应缺少有效 token 对");
   }
+  consecutiveMalformedCount = 0; // 新 token 族 = 新计数起点（修：曾残留旧 streak，重登后首刷畸形即误触上限清会话）
+  cacheGeneration += 1; // 使在途 refresh 结果失效（修：登录/换码与在途刷新并发时旧刷新会覆盖新会话）
   saveSession({ version: 1, realm, refreshToken: pair.refreshToken });
   cachedToken = pair.accessToken;
   try {
@@ -221,7 +264,7 @@ export async function login(realm: "cn" | "global", provider: SocialProvider): P
     const pair = await apiFetch(baseUrl, "/api/auth/token", {
       method: "POST",
       body: { grantType: "authorization_code", code: lr.code, codeVerifier, deviceId },
-    }) as TokenPair;
+    }) as AuthTokenPair;
     savePair(realm, pair);
     return;
   }
@@ -257,7 +300,7 @@ export async function login(realm: "cn" | "global", provider: SocialProvider): P
   const pair = await apiFetch(baseUrl, "/api/auth/token", {
     method: "POST",
     body: { grantType: "authorization_code", code, codeVerifier, deviceId },
-  }) as TokenPair;
+  }) as AuthTokenPair;
 
   savePair(realm, pair);
 }
@@ -366,6 +409,7 @@ export async function logout(): Promise<void> {
   const session = loadSession();
   cacheGeneration += 1; // 使在途 refresh 结果失效（不落盘）
   cachedToken = null; cachedExp = 0; clearSession();
+  consecutiveMalformedCount = 0; // 登出即全新起点
   if (token && session) {
     // 按会话实际 realm 登出（修：曾恒打 global 端点，cn 会话登出错区）
     const baseUrl = getEndpoint(session.realm, "authApiBaseUrl");
