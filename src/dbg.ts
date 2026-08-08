@@ -8,7 +8,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const DEBUG_LOG = path.join(os.homedir(), ".pi", "cindy-sync", "relay-debug.log");
+const DATA_DIR = process.env.PI_CINDY_DATA_DIR
+  ?? path.join(os.homedir(), ".pi", "cindy-sync");
+const DEBUG_LOG = path.join(DATA_DIR, "relay-debug.log");
 const DEBUG_LOG_MAX_BYTES = 1024 * 1024;
 
 export function dbgLog(msg: string): void {

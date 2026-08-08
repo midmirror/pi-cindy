@@ -13,7 +13,13 @@ import path from "node:path";
 import os from "node:os";
 import type { AuthSessionRecord } from "../types.js";
 
-const DIR = path.join(os.homedir(), ".pi", "cindy-sync");
+// 尊重 PI_CINDY_DATA_DIR（与 db.ts DATA_DIR 同源）：测试/隔离环境把 session.enc
+// 与 SQLite 一起放进隔离目录，绝不触碰真实登录态。此前硬编码 ~/.pi/cindy-sync
+// 导致冒烟测试的 logout()/saveSession()/clearSession() 全部作用在真实 session.enc
+// 上——每次 npm test 都删真实登录态（EXPERIENCE #45）。
+/** 无环境覆盖时的默认数据目录（导出供测试快照同源引用，防路径迁移后测试静默校验错路径）。 */
+export const DEFAULT_DIR = path.join(os.homedir(), ".pi", "cindy-sync");
+const DIR = process.env.PI_CINDY_DATA_DIR ?? DEFAULT_DIR;
 const FILE = path.join(DIR, "session.enc");
 
 function ensureDir() { fs.mkdirSync(DIR, { recursive: true }); }
