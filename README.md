@@ -2,6 +2,11 @@
 
 > Pi extension 模拟 Cindy Desktop 被控端（device-link sync），让 Cindy 手机端浏览/操作 Pi 会话。
 
+[![CI](https://github.com/midmirror/pi-cindy/actions/workflows/ci.yml/badge.svg)](https://github.com/midmirror/pi-cindy/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/pi-cindy)](https://www.npmjs.com/package/pi-cindy)
+[![License](https://img.shields.io/github/license/midmirror/pi-cindy)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.23-blue)](package.json)
+
 [Cindy](https://cindy.app/) 是一个开源 AI agent（[makecindy/cindy](https://github.com/makecindy/cindy)，Apache-2.0）。本扩展模拟其 Desktop 被控端接入 device-link 链路：手机端登录 Cindy 后，即可查看你的 Pi 会话列表、打开会话、选择模型、发送消息、停止/转向/压缩会话。
 
 ## 特性
@@ -48,7 +53,7 @@ ln -s "$PWD" ~/.pi/agent/extensions/pi-cindy
 ## 开发
 
 ```sh
-npm test          # 冒烟测试（241 断言，PI_CINDY_DATA_DIR 隔离）+ 三进程集成测试
+npm test          # 冒烟测试（290 断言，PI_CINDY_DATA_DIR 隔离）+ 三进程集成测试
 npm run typecheck # tsc --noEmit（strict）
 ```
 

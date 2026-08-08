@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 项目文档
+    url: https://github.com/midmirror/pi-cindy/tree/main/docs
+    about: DESIGN / HANDOFF / CHANGELOG / EXPERIENCE 文档
+  - name: 上游参考仓 makecindy/cindy
+    url: https://github.com/makecindy/cindy
+    about: 协议与契约的权威来源，上游变更先查这里

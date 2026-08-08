@@ -1,0 +1,66 @@
+name: Bug report
+description: 报告 pi-cindy 的功能缺陷
+title: "[bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前先搜现有 issue 避免重复。排障类问题请先按 README「排障」节开启 `PI_CINDY_DEBUG=1` 复现。
+  - type: input
+    id: pi-version
+    attributes:
+      label: pi / pi-cindy 版本
+      description: 如 `pi 0.83.0` + `pi-cindy 0.5.2`（npm 版或 git commit）
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node 版本
+      description: `node -v` 输出（需 ≥22.23）
+    validations:
+      required: true
+  - type: input
+    id: mobile-version
+    attributes:
+      label: Cindy 手机端版本 / 平台
+      description: 如 iOS 4.1.0 / Android，账号区域 global/cn
+    validations:
+      required: false
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 从手机端还是桌面触发的？操作序列尽量精确
+      placeholder: |
+        1. ...
+        2. ...
+        3. 观察到 ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: 预期 vs 实际
+      description: 期望行为与观察到的差异
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志（可选）
+      description: relay-debug.log 关键段；**先确认不含 token/敏感信息**（新版日志已脱敏，旧版可能残留）
+      render: text
+    validations:
+      required: false
+  - type: dropdown
+    id: repro-type
+    attributes:
+      label: 复现性质
+      options:
+        - 真机复现（手机端实际操作）
+        - 仅模拟测试复现
+        - 偶发 / 无法稳定复现
+    validations:
+      required: true
