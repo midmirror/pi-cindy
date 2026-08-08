@@ -33,6 +33,17 @@
   不让位、B 全程 standby 超时退出，三断言连挂。worker 增加 `READY` 信号
   （registerInstance + createSession + arbiter 启动完成），测试 `waitOut` 后再发路由；
   B 存活窗口 2000→4000ms。本地 12 连跑 + 高负载 8 连跑全绿
+- **跨进程 refresh 互斥**（EXPERIENCE #23/#46 遗留技术债落地）：多 pi 进程 / 热重载叠加时
+  并发 refresh 同一 refresh token → 服务端**轮换式**竞争（先到者轮换，后到者用旧 token 被拒）→
+  401 INVALID_REFRESH_TOKEN → 误判家族已死清会话强制重登。此前 `refreshInFlight` 单飞只护
+  单进程（EXPERIENCE #46 L6 标注跨进程版开放）。修复 `src/auth/refresh-lock.ts` 双层互斥：
+  ①进程内 promise-chain 串行（基础设施级单飞兜底，不依赖调用方自觉）；②进程间 SQLite 单行锁
+  `refresh_lock`（CAS，与 device_link_ownership 同源思路）——不同 pid 互斥，持锁者崩溃靠
+  `locked_at` 过期（30s）由后续进程抢占，同 pid 残留锁（热重载幽灵）立即接管。**锁内重读
+  session.enc**（可能已被先到进程轮换落盘新 token）绝不用进锁前的陈旧 token；锁仅护一次
+  HTTP 往返（秒级），db 不可用 / 锁超时（15s）跳锁 best-effort 不阻塞认证。冒烟 20b 段全链路
+  走锁内重读路径无回归；ownership 新增锁语义测试（并发互斥最大并发=1 / 崩溃 stale 抢占 / 同
+  pid 热重载覆盖 / 他进程持锁不进入、释放后接管 / 释放只清自己锁），锁表入 db DDL 第 6 表
 
 ### Added
 

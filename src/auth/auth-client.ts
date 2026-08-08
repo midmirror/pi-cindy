@@ -7,6 +7,7 @@ import { exec } from "node:child_process";
 import { saveSession, loadSession, clearSession } from "../store/token-store.js";
 import { getEndpoint } from "../endpoints.js";
 import { startLoopbackListener } from "./loopback.js";
+import { withRefreshLock } from "./refresh-lock.js";
 import { dbgLog } from "../dbg.js";
 import { type TokenPair } from "../types.js";
 
@@ -106,12 +107,21 @@ export async function getAccessToken(realm: "cn" | "global" = "global"): Promise
   if (cachedToken && Date.now() < cachedExp - 60_000) return cachedToken;
   if (refreshInFlight) return refreshInFlight;
   refreshInFlight = (async () => {
-    const session = loadSession();
-    if (!session) return null;
-    const r = session.realm || realm;
     const gen = cacheGeneration;
     try {
-      const pair = await refreshToken(r, session.refreshToken);
+      // 跨进程互斥（EXPERIENCE #23/#46 遗留技术债）：多 pi 进程 / 热重载叠加时并发
+      // refresh 同一 refresh token → 服务端 rotation 竞争 → 家族撤销 401 → 误清会话。
+      // withRefreshLock 锁内**重读 session.enc**（可能已被他进程轮换落盘新 token），
+      // 绝不用进锁前的陈旧 token；锁护住「任一时刻只一个进程刷新」。
+      const result = await withRefreshLock(async () => {
+        const session = loadSession();
+        if (!session) return null;
+        const r = session.realm || realm;
+        const pair = await refreshToken(r, session.refreshToken);
+        return { pair, realm: r };
+      });
+      if (!result) return null;
+      const { pair, realm: r } = result;
       if (gen !== cacheGeneration) return null; // 期间已登出：不写回
       // 畸形响应不落盘（见 isValidTokenPair）：保留现状，靠重新登录恢复
       if (!isValidTokenPair(pair)) {
@@ -146,16 +156,16 @@ export async function getAccessToken(realm: "cn" | "global" = "global"): Promise
       if (err instanceof AuthApiError
         && (err.code === "INVALID_REFRESH_TOKEN" || err.statusCode === 401)) {
         consecutiveMalformedCount = 0; // 会话已清，计数归零
-        dbgLog(`auth refresh 401 (${r}) code=${err.code} status=${err.statusCode} — clearing session (token family revoked)`);
+        dbgLog(`auth refresh 401 (${realm}) code=${err.code} status=${err.statusCode} — clearing session (token family revoked)`);
         clearSession();
       } else {
         // 只打 code/status 或错误类型，不打 err.message——AuthApiError.message 是服务端
         // 响应体前 200 字符，错误响应若回显请求体（含 refreshToken/deviceId）会泄进
         // relay-debug.log（EXPERIENCE #46）。
         if (err instanceof AuthApiError) {
-          dbgLog(`auth refresh failed (${r}) code=${err.code} status=${err.statusCode}`);
+          dbgLog(`auth refresh failed (${realm}) code=${err.code} status=${err.statusCode}`);
         } else {
-          dbgLog(`auth refresh failed (${r}) type=${(err as Error)?.constructor?.name ?? "unknown"}`);
+          dbgLog(`auth refresh failed (${realm}) type=${(err as Error)?.constructor?.name ?? "unknown"}`);
         }
       }
       return null;
