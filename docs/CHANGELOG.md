@@ -4,6 +4,14 @@
 > tag 与全部旧 commit 随历史重写丢失（`git cat-file` 不可寻址），旧版本标题中的 commit 锚定
 > 仅供参考。规划不在此记录（见 HANDOFF 未完成块）。
 
+## [Unreleased]
+
+### Changed
+
+- **release workflow 自动发布 npm**（用户需求）：打 `v*` tag 时除建 GitHub Release 外自动 `npm publish`
+  （`prepublishOnly` 门禁：build + test + typecheck）；tag 与 package.json version 一致性校验，不匹配中止；
+  认证走 repo secret `NPM_TOKEN`（granular token，publish 权限 + bypass 2FA）。
+
 ## [0.5.3] — 2026-08-09 · 开源发布准备 + 稳定性跟进
 
 ### Fixed

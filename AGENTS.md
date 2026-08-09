@@ -68,9 +68,10 @@ PI_CINDY_DATA_DIR=/tmp/cindy-test npx pi -e . -c "/cindy-login global"
 - **禁直推 main**：分支保护（test + commitlint 必需，strict）已开，改动一律走 PR + squash merge。
 - **禁关闭/放宽分支保护、禁把 merge 策略改回 merge commit/rebase**（当前 squash-only + delete-branch）。
 - **发版固定流程**：改 CHANGELOG 版本块 → bump package.json version → `git tag vX.Y.Z` → push tag
-  （`.github/workflows/release.yml` 自动建 Release，notes 从 CHANGELOG 对应版本条目提取）。
+  （`.github/workflows/release.yml` 自动发布 npm + 建 Release，notes 从 CHANGELOG 对应版本条目提取；
+  自动发布依赖 repo secret `NPM_TOKEN`，granular token 需 publish 权限 + bypass 2FA，过期需更新）。
   **禁手建 Release、禁改 release.yml 提取逻辑**；CHANGELOG 版本条目必须与 tag 一一对应
-  （条目不匹配 = Release 空 notes）。
+  （条目不匹配 = Release 空 notes）；tag 必须与 package.json version 一致（不匹配 publish 自动中止）。
 - **日志安全**：禁落 token/响应体（refresh 已脱敏，防回归）；文件权限 0600 勿放宽，
   session.enc 密钥派生逻辑勿改弱。
 
