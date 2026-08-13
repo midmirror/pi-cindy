@@ -39,6 +39,7 @@ PI_CINDY_DATA_DIR=/tmp/cindy-test npx pi -e . -c "/cindy-login global"
   WAL + busy_timeout，主库/-wal/-shm 均收敛 0600；sessions/messages/device_link_ownership/
   cindy_instances/cindy_handoff_mailbox/refresh_lock 六表，所有权 CAS 单行表、refresh 互斥锁单行表）；
   settings JSON 原子写（跨进程锁 + pid 后缀 tmp）+ 0600，损坏 fail-closed（remote 关）；`PI_CINDY_DATA_DIR` 覆盖数据目录。
+  UI 偏好（状态栏语言）独立 `ui-prefs.json`（0600 原子写 + 进程内缓存，不进 device-link 语义 settings.json）。
 - **多进程授权门禁**：standby 进程执行 revoke/remote-off 只写共享 settings，owner 无法被同步通知——
   持有者 2s 轮询 sweep（`client.sweepRevokedControllers`）兜底断开被撤销/禁用控制器；仲裁状态线只由
   onAcquire/onStandbyChanged/onDemote 回调驱动（startArbiter 后同步 isOwner() 恒 false，勿用）。

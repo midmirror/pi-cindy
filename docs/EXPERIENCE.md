@@ -461,6 +461,25 @@ SDK 子会话；配置 `persistSession` 的自定义 agent 除外，接受漏判
 验证：ownership 锁语义测试（并发互斥最大并发=1 / 崩溃 stale 抢占 / 同 pid 热重载覆盖 / 他
 进程持锁不进入释放后接管 / 释放只清自己锁）；冒烟 20b 段走锁内重读路径无回归（290 断言）。
 
+### 49. 缓存语义必须区分「未加载」与「无值」：null 作哨兵会每次读盘
+
+状态栏语言偏好缓存初版 `cachedExplicit: StatusLang | null`，null = 未加载。但**无显式设置**
+（全新安装无 ui-prefs.json）时读盘返回 null 又写回 null——下次调用仍 null → 每次 readFileSync。
+markOnline 每业务帧调用，验证脚本（readFileSync 计数）当场抓到 100 次调用读盘 101 次。
+
+**方法**：缓存用独立 `loaded` 布尔哨兵区分「未加载」与「加载过但无显式值」——后者走 env 解析
+（纯内存零 I/O），显式设置时更新缓存。**教训：null 双关（未加载/无值）是缓存通病**，加载态
+必须显式跟踪；任何「每帧调用的读盘路径」都要用计数型验证脚本证明零 I/O。
+
+### 50. `process.env.X = undefined` 写入字面量字符串 "undefined"（truthy），还原用 delete
+
+测试还原环境变量时 `process.env.CINDY_LOCALE = savedLocale`，若 savedLocale 原为 undefined，
+Node 把 **字符串 "undefined"** 写入 env——truthy，`resolveSystemLocale` 短路返回，同进程后续
+用例 locale 语义被静默污染（M4 用例修复前已实测）。
+
+**方法**：还原 env 用 `if (saved === undefined) delete process.env.X; else process.env.X = saved;`，
+且包 try/finally（断言失败也还原）。**教训：env 是字符串字典，undefined 不是「删除」**。
+
 ## 附录：问题记录（原 ISSUES.md #1-62）
 
 > 2026-08-06 · ISSUES.md 已删除并入本文件。问题表为历史快照（根因/修复/验证），
