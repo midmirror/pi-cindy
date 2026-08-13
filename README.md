@@ -38,6 +38,7 @@ ln -s "$PWD" ~/.pi/agent/extensions/pi-cindy
 ```sh
 /cindy-login [cn|global] [google|apple|email]   # 登录（首次必需）
 /cindy-status                                    # 查看连接/仲裁/模型状态
+/cindy-status-lang [zh|en]                       # 切换状态栏语言（无参显示当前）
 /cindy-connect                                   # 手动建立 relay 连接
 /cindy-disconnect                                # 断开
 /cindy-logout                                    # 登出

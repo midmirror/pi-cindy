@@ -8,6 +8,38 @@
 
 ### Changed
 
+- **状态栏文案产品化 + 中英切换**（用户需求）：状态栏只展示主状态短词，技术细节
+  （错误码、协议原因）全部移入 `lastIssue` 由 `/cindy-status` 展示——
+  `已连接 / 其他Pi已连接 / 离线 / 协议不兼容 / 遥控已关闭`（英文对应
+  `Connected / Another Pi instance connected / Offline / Protocol mismatch /
+  Remote control off`）。合并原「持有权已让出」独立状态：`handoff` 过渡与
+  `renew-unreachable` 自我降级归入「离线」（此时手机端实际无 owner，旧文案
+  「持有权已让出」在无其他实例时显示为误导）。新增 `/cindy-status-lang [zh|en]`
+  命令切换状态栏语言（无参显示当前）；语言偏好持久化到独立 `ui-prefs.json`
+  （不进 device-link 语义的 settings.json），默认跟随系统 locale。
+  认证失败（token 失效/撤销）此前只写 lastIssue 不刷状态栏——relay 已断开且
+  停止重连，状态栏却残留「已连接」假象，现归入「离线」。
+
+#### 审查修复（review-swarm 4 角色）
+- **热路径缓存**：`readStatusLang` 显式值进程内缓存（loaded 哨兵区分「未加载/无显式
+  设置」）——markOnline 每业务帧调用，曾每次 fs.readFileSync+JSON.parse；现零 I/O，
+  env 切换（无显式设置时）仍实时生效。
+- **遥控关闭不被业务帧覆盖**：「遥控已关闭」曾在下个业务帧被 markOnline 刷回
+  「已连接」（remoteOff 态存活毫秒级）。`remoteEnabled` 进程内缓存（/cindy-remote
+  写 settings 后同步，避免 markOnline 每帧读盘），onAcquire/markOnline/connect
+  统一走 `relayOnlineStatus()` 门禁。
+- **locale 边界**：`systemPrefersZh` 改 zh 前缀判断——`CINDY_LOCALE=zh-TW/zh-HK`
+  此前归英文，与 auth 登录 locale 不一致。
+- **relay-error 日志白名单**：`relayErrorBrief` 只透出 code/message——payload 是
+  服务器可控结构，全量 JSON.stringify 曾把未知字段带进 relay-debug.log 与握手
+  错误 message（后者经 connect-failed → lastIssue → /cindy-status notify 用户可见）。
+- **杂项**：登录/重连成功 toast 与状态栏文案同源（`STATUS_TEXTS.connected`）；
+  `setStatus`/`refreshStatusLine` 文案求值整体 try（不逃出 ws 回调不变量）；
+  `/cindy-status-lang` 写盘失败 try/catch + notify；`setStatusLang` finally 清理 tmp；
+  未登录 session_start 清空状态栏（quit/reload 后 `currentStatusKey` 残留不再被
+  `/cindy-status-lang` 重推过期状态）；冒烟 M4 用例 env 还原改 `delete`（避免写入
+  字面量 "undefined" 污染后续 locale 解析）+ try/finally + 显式优先断言。
+
 - **release workflow 自动发布 npm**（用户需求）：打 `v*` tag 时除建 GitHub Release 外自动 `npm publish`
   （`prepublishOnly` 门禁：build + test + typecheck）；tag 与 package.json version 一致性校验，不匹配中止；
   认证走 repo secret `NPM_TOKEN`（granular token，publish 权限 + bypass 2FA）。

@@ -69,6 +69,18 @@ function isSubscriptionTopic(value: unknown): value is string {
   return false;
 }
 
+/** relay-error payload 简报：只透出 code/message 白名单字段。
+ *  payload 是服务器可控结构，全量 JSON.stringify 可能把未知字段带进日志/
+ *  握手错误 message（后者经 connect-failed → lastIssue → /cindy-status notify 用户可见）。
+ *  未知结构回落固定占位，不落原文。 */
+function relayErrorBrief(payload: unknown): string {
+  const p = (payload ?? {}) as { code?: unknown; message?: unknown };
+  const parts: string[] = [];
+  if (p.code !== undefined) parts.push(`code=${String(p.code)}`);
+  if (p.message !== undefined) parts.push(`message=${String(p.message)}`);
+  return parts.length ? parts.join(" ") : "code=UNKNOWN";
+}
+
 export class DeviceLinkClient {
   private ws: WebSocket | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
@@ -219,12 +231,12 @@ export class DeviceLinkClient {
           return;
         }
         if (env.kind === "relay-error") {
-          dbgLog(`relay-error ${JSON.stringify(env.payload)}`);
+          dbgLog(`relay-error ${relayErrorBrief(env.payload)}`);
           if (!this.connected) {
             // 握手期 relay 拒绝：终止本次握手
             clearTimeout(timeout);
             try { ws?.close(); } catch { /* 静默吞错：notify/close/parse 容错 */ }
-            fail(new Error(`Relay error: ${JSON.stringify(env.payload)}`));
+            fail(new Error(`Relay error: ${relayErrorBrief(env.payload)}`));
           }
           // 已握手后的 relay-error 非致命：路由给 handler 记录（参考实现按 pending 请求处理，不杀连接）
           this.readyHandler?.(env);
@@ -270,7 +282,7 @@ export class DeviceLinkClient {
     });
   }
 
-  // 注册消息处理器。可在 connect() 之前调用(握手期的业务帧也会路由进来)。
+// 注册消息处理器。可在 connect() 之前调用(握手期的业务帧也会路由进来)。
   onReady(handler: (env: Envelope) => void): void {
     this.readyHandler = handler;
   }
@@ -280,14 +292,15 @@ export class DeviceLinkClient {
     if (env.kind === "invoke") {
       const inv = env.payload as InvokePayload;
       dbgLog(`← invoke ${inv?.channel} src=${env.src ?? "?"} args=${JSON.stringify(inv?.args)?.slice(0, 200)}`);
-    } else {
+    } else if (env.kind !== "relay-error") {
+      // relay-error 帧跳过通用日志（case 内已按白名单打 relayErrorBrief，避免全量 payload 重复落盘）
       dbgLog(`← ${env.kind} src=${env.src ?? "-"} payload=${JSON.stringify(env.payload)?.slice(0, 200)}`);
     }
     switch (env.kind) {
       case "pong": break;
       case "relay-error":
         // 非致命：只进排障日志 + 通知上层状态（不 console.error 刷屏；参考实现按 pending 请求处理）
-        dbgLog(`relay-error ${JSON.stringify(env.payload)}`);
+        dbgLog(`relay-error ${relayErrorBrief(env.payload)}`);
         this.onRelayError?.(env.payload);
         break;
       case "link-open": {

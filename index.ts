@@ -33,6 +33,7 @@ import {
 } from "./src/ownership.js";
 import { getStmt, closeDb } from "./src/store/db.js";
 import { readDeviceLinkSettings, updateDeviceLinkSetting } from "./src/store/settings-store.js";
+import { readStatusLang, setStatusLang } from "./src/store/ui-prefs-store.js";
 import { getInstanceId, registerInstance, heartbeatInstance, releaseInstance } from "./src/instance.js";
 import { consumeMailboxForSession, sweepStaleInstances } from "./src/handoff.js";
 import { purgeFailedMailbox, failStalePendingMailbox } from "./src/store/handoff-store.js";
@@ -43,6 +44,10 @@ export default function (pi: ExtensionAPI) {
   let activeId: string | null = null;
   /** 最近一次连接问题（认证失败等），供 /cindy-status 与工具展示。 */
   let lastIssue: string | null = null;
+  /** remoteControlEnabled 进程内缓存：markOnline 每业务帧调用，不能每帧读盘；
+   *  /cindy-remote 写 settings 后同步。跨进程变更由 owner sweep（2s）兕底断开控制端，
+   *  状态栏展示可接受短暂旧值。 */
+  let remoteEnabled = readDeviceLinkSettings().remoteControlEnabled;
   /** status line 更新句柄（session_start 捕获；无会话时静默 no-op）。 */
   let statusCtx: ExtensionContext | null = null;
   /** 待触发的一次性连接成功 notify（login/session_start 设置，onAcquire 消费；ctx 失效守卫在闭包内）。 */
@@ -177,7 +182,7 @@ export default function (pi: ExtensionAPI) {
         lastIssue = null;
         startSweep();
         startStaleSweep();
-        safeSetStatus("Cindy: relay connected");
+        setStatus(relayOnlineStatus());
         ensureAndNotify();
         // 接管后消费本进程会话的邮箱（client 就绪后，保证重放路径 push 可用）
         ensureClient()
@@ -192,14 +197,15 @@ export default function (pi: ExtensionAPI) {
         stopStaleSweep();
         // 登出/退出（stopArbiter 已置 arbiter=null）不刷状态；superseded 已由
         // onStandbyChanged(true) 展示 standby，这里只覆盖「无人接手」的降级
+        // （handoff 过渡 / renew-unreachable 自我降级）→ 手机端实际无 owner，归“离线”。
         if (arbiter && !arbiter.isStandby()) {
-          safeSetStatus("Cindy: relay offline（持有权已让出）");
+          setStatus("offline");
         }
         settleOwnership(false);
       },
       onStandbyChanged: (standby) => {
         if (standby) {
-          safeSetStatus("Cindy: standby (另一实例持有连接)");
+          setStatus("standby");
           settleOwnership(false);
         }
       },
@@ -256,16 +262,55 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
+  /**
+   * 状态栏文案表（产品化：主状态短词，技术细节进 lastIssue 由 /cindy-status 展示）。
+   * 中英双语，按 ui-prefs 的语言偏好选择（/cindy-status-lang 切换）。
+   */
+  const STATUS_TEXTS = {
+    connected: { zh: "已连接", en: "Connected" },
+    standby: { zh: "其他Pi已连接", en: "Another Pi instance connected" },
+    offline: { zh: "离线", en: "Offline" },
+    protocolMismatch: { zh: "协议不兼容", en: "Protocol mismatch" },
+    remoteOff: { zh: "遥控已关闭", en: "Remote control off" },
+  } as const;
+  type StatusKey = keyof typeof STATUS_TEXTS;
+
+  /** 最近一次展示的状态键；语言切换时据此重刷（null = 状态栏已清空）。 */
+  let currentStatusKey: StatusKey | null = null;
+  /** relay 在线时展示的状态：遥控关闭（门禁）时归「遥控已关闭」，否则「已连接」。 */
+  const relayOnlineStatus = (): StatusKey => (remoteEnabled ? "connected" : "remoteOff");
+  const setStatus = (key: StatusKey) => {
+    currentStatusKey = key;
+    try {
+      safeSetStatus(`Cindy: ${STATUS_TEXTS[key][readStatusLang()]}`);
+    } catch {
+      // 文案求值/读偏好异常：绝不逃出 ws 回调（与 safeSetStatus 同一不变量）
+    }
+  };
+  const refreshStatusLine = () => {
+    if (currentStatusKey !== null) {
+      try {
+        safeSetStatus(`Cindy: ${STATUS_TEXTS[currentStatusKey][readStatusLang()]}`);
+      } catch {
+        // 同上：异常不逃出回调
+      }
+    }
+  };
+  const clearStatus = () => {
+    currentStatusKey = null;
+    safeSetStatus(undefined);
+  };
+
   /** relay 报设备离线等非致命错误 → 状态 line 展示，不刷错误输出。 */
   const markOffline = (payload: unknown) => {
     const code = (payload as any)?.code ?? "RELAY_ERROR";
-    lastIssue = `relay:${code}`;
-    safeSetStatus(`Cindy: device offline (${code})`);
+    lastIssue = `relay:${code}`; // 错误码细节留在 /cindy-status，状态栏只报主状态
+    setStatus("offline");
   };
-  /** 业务帧到达 = 设备在线可操作 → 清回在线状态。 */
+  /** 业务帧到达 = 设备在线可操作 → 清回在线状态（遥控关闭时保持「遥控已关闭」）。 */
   const markOnline = () => {
     if (lastIssue?.startsWith("relay:")) lastIssue = null;
-    safeSetStatus("Cindy: relay connected");
+    setStatus(relayOnlineStatus());
   };
 
   async function ensureClient(realmArg: "cn" | "global" = "global"): Promise<DeviceLinkClient | null> {
@@ -291,6 +336,8 @@ export default function (pi: ExtensionAPI) {
       client = c;
       c.onAuthFailed = () => {
         lastIssue = `auth-failed (${realm}): token 失效，请 /cindy-login 重新登录`;
+        // token 失效 → relay 断开且停止重连（手机端连不上）：状态栏必须离开“已连接”假象
+        setStatus("offline");
       };
       // relay-error（DEVICE_OFFLINE 等）非致命：状态 line 体现，不持续错误输出
       c.onRelayError = markOffline;
@@ -328,12 +375,12 @@ export default function (pi: ExtensionAPI) {
         if (client?.isProtocolMismatch()) {
           // 协议版本不一致是终态（client 停止重连）：给出与 authFailed 不同的明确信号
           lastIssue = "protocol-mismatch: server 协议版本不一致，已停止重连";
-          safeSetStatus("Cindy: protocol mismatch（server 协议版本不一致，已停止重连）");
+          setStatus("protocolMismatch");
         } else if (client?.isAuthFailed()) {
           // onAuthFailed 已设 lastIssue（token 失效 → 提示重新登录）
         } else {
           lastIssue = `connect-failed: ${err instanceof Error ? err.message : String(err)}`;
-          safeSetStatus("Cindy: relay 连接失败");
+          setStatus("offline");
         }
       });
   }
@@ -354,6 +401,10 @@ export default function (pi: ExtensionAPI) {
       // 仲裁器已在运行（会话切换 new/fork/resume、/cindy-disconnect 后）：
       // startArbiter 早退、onAcquire 不会再触发 → 持有者需主动补连（修回归）
       if (arbiter?.isOwner()) ensureAndNotify();
+    } else {
+      // 未登录：状态栏应空。quit/reload 后 currentStatusKey 可能残留旧值，
+      // 不清理会在未登录会话下经 /cindy-status-lang 把过期状态重新推上状态栏。
+      clearStatus();
     }
   });
 
@@ -449,7 +500,7 @@ export default function (pi: ExtensionAPI) {
           }
           if (outcome.status === "ok") {
             ctx.ui.notify("Cindy login OK!", "info");
-            pendingNotify = () => { try { ctx.ui.notify("Cindy: relay connected", "info"); } catch { /* 静默吞错：notify/close/parse 容错 */ } };
+            pendingNotify = () => { try { ctx.ui.notify(`Cindy: ${STATUS_TEXTS.connected[readStatusLang()]}`, "info"); } catch { /* 静默吞错：notify/close/parse 容错 */ } };
             startArbiter(); // 仲裁回调（onAcquire）负责连 relay + 状态
             if (arbiter?.isOwner()) ensureAndNotify(); // 已在运行（重登录）：直接补连
             return;
@@ -466,7 +517,7 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify(`Opening browser for ${method} login (${realm})...`, "info");
         await login(realm, method);
         ctx.ui.notify("Cindy login OK!", "info");
-        pendingNotify = () => { try { ctx.ui.notify("Cindy: relay connected", "info"); } catch { /* 静默吞错：notify/close/parse 容错 */ } };
+        pendingNotify = () => { try { ctx.ui.notify(`Cindy: ${STATUS_TEXTS.connected[readStatusLang()]}`, "info"); } catch { /* 静默吞错：notify/close/parse 容错 */ } };
         startArbiter(); // 仲裁回调（onAcquire）负责连 relay + 状态
         if (arbiter?.isOwner()) ensureAndNotify(); // 已在运行（重登录）：直接补连
       } catch (e: any) {
@@ -477,7 +528,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand("cindy-logout", {
     description: "Logout from Cindy",
-    handler: async (_args, ctx) => { client?.disconnect(); client = null; await stopArbiter(); await logout(); ctx.ui.notify("Logged out", "info"); ctx.ui.setStatus("cindy", undefined); },
+    handler: async (_args, ctx) => { client?.disconnect(); client = null; await stopArbiter(); await logout(); ctx.ui.notify("Logged out", "info"); clearStatus(); },
   });
 
   pi.registerCommand("cindy-status", {
@@ -500,6 +551,20 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  pi.registerCommand("cindy-status-lang", {
+    description: "Set status bar language: /cindy-status-lang [zh|en]",
+    handler: async (args, ctx) => {
+      const arg = (args ?? "").trim().toLowerCase();
+      if (arg === "zh" || arg === "en") {
+        setStatusLang(arg);
+        refreshStatusLine(); // 立即按新语言重刷当前状态（currentStatusKey 缓存）
+        ctx.ui.notify(`Status bar language: ${arg}`, "info");
+      } else {
+        ctx.ui.notify(`Status bar language: ${readStatusLang()}（用法: /cindy-status-lang [zh|en]）`, "info");
+      }
+    },
+  });
+
   pi.registerCommand("cindy-remote", {
     description: "Toggle remote control: /cindy-remote [on|off]",
     handler: async (args, ctx) => {
@@ -510,7 +575,8 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       const enabled = arg === "on";
-      updateDeviceLinkSetting("remoteControlEnabled", () => enabled);
+      const next = updateDeviceLinkSetting("remoteControlEnabled", () => enabled);
+      remoteEnabled = next.remoteControlEnabled; // 同步进程内缓存（markOnline 不再每帧读盘）
       if (!enabled) client?.disconnectAllControllers("toggle-off");
       ctx.ui.notify(
         !enabled && arbiter && !arbiter.isOwner()
@@ -518,7 +584,7 @@ export default function (pi: ExtensionAPI) {
           : `Remote control ${enabled ? "enabled" : "disabled"}`,
         "info",
       );
-      safeSetStatus(enabled ? "Cindy: relay connected" : "Cindy: remote control off");
+      setStatus(enabled ? "connected" : "remoteOff");
     },
   });
 
@@ -570,14 +636,14 @@ export default function (pi: ExtensionAPI) {
         const c = await ensureClient();
         if (!c) { ctx.ui.notify("Connect cancelled: 连接期间持有权被接管", "warning"); return; }
         try { ctx.ui.notify("Connected", "info"); } catch { /* 静默吞错：notify/close/parse 容错 */ }
-        safeSetStatus("Cindy: relay connected");
+        setStatus(relayOnlineStatus());
       } catch (e: any) { ctx.ui.notify(`Connect failed: ${e.message}`, "error"); }
     },
   });
 
   pi.registerCommand("cindy-disconnect", {
     description: "Disconnect from relay",
-    handler: async (_args, ctx) => { client?.disconnect(); client = null; ctx.ui.notify("Disconnected", "info"); ctx.ui.setStatus("cindy", undefined); },
+    handler: async (_args, ctx) => { client?.disconnect(); client = null; ctx.ui.notify("Disconnected", "info"); clearStatus(); },
   });
 
   // 工具

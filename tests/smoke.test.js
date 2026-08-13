@@ -1260,6 +1260,39 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     db.prepare('DELETE FROM cindy_instances WHERE instance_id = ?').run(myId);
   }
 
+  // ============ M4 状态栏语言偏好（ui-prefs-store）============
+  {
+    const prefs = jiti(path.join(base, 'store/ui-prefs-store.js'));
+    const prefsFile = path.join(DATA_DIR, 'ui-prefs.json');
+    const savedLocale = process.env.CINDY_LOCALE;
+    try {
+      // 无显式设置时跟随系统 locale（CINDY_LOCALE 覆盖，与 auth resolveSystemLocale 同源）
+      process.env.CINDY_LOCALE = 'zh-CN';
+      assert(prefs.readStatusLang() === 'zh', 'M4 无显式设置跟随 zh 系统 locale');
+      process.env.CINDY_LOCALE = 'en-US';
+      assert(prefs.readStatusLang() === 'en', 'M4 无显式设置跟随 en 系统 locale');
+    } finally {
+      // 还原 env：undefined 必须 delete——直接赋值会写入字面量 "undefined"（truthy），
+      // resolveSystemLocale 短路返回，污染同进程后续用例的 locale 解析
+      if (savedLocale === undefined) delete process.env.CINDY_LOCALE;
+      else process.env.CINDY_LOCALE = savedLocale;
+    }
+    // 显式设置持久化 + 覆盖默认（缓存路径）
+    prefs.setStatusLang('en');
+    assert(prefs.readStatusLang() === 'en', 'M4 setStatusLang(en) 后读回 en（缓存命中）');
+    assert(fs.existsSync(prefsFile), 'M4 偏好文件已持久化');
+    // 显式设置优先于 env（设置 zh 后仍返回 en）
+    process.env.CINDY_LOCALE = 'zh-CN';
+    assert(prefs.readStatusLang() === 'en', 'M4 显式设置优先于系统 locale');
+    if (savedLocale === undefined) delete process.env.CINDY_LOCALE;
+    else process.env.CINDY_LOCALE = savedLocale;
+    prefs.setStatusLang('zh');
+    assert(prefs.readStatusLang() === 'zh', 'M4 setStatusLang(zh) 覆盖为 zh');
+    // 文件权限 0600（与 settings/session.enc 同级收敛）
+    const mode = fs.statSync(prefsFile).mode & 0o777;
+    assert(mode === 0o600, 'M4 ui-prefs.json 权限 0600', { mode });
+  }
+
   // 清理
   fs.rmSync(DATA_DIR, { recursive: true, force: true });
 
