@@ -55,6 +55,17 @@
   （`prepublishOnly` 门禁：build + test + typecheck）；tag 与 package.json version 一致性校验，不匹配中止；
   认证走 repo secret `NPM_TOKEN`（granular token，publish 权限 + bypass 2FA）。
 
+### Fixed
+
+- **定向交接（handoff）目标 id 空间错配——多实例下手机消息永远无法触发 standby 接管**：
+  仲裁器 `instanceId` 默认 `randomUUID()`，与会话 host（`getInstanceId()`，instance.ts 进程级单例，
+  `cindy_instances.instance_id` 同源）分属两套 id 空间。手机访问 standby 实例会话 → owner 路由
+  写 `handoff_to=<host值>` → 目标仲裁器比较 `handoffTo === this.instanceId` 永不相等 → 交接 100%
+  失败、10s TTL 过期后 owner `reclaimed-own-row`，期间会话被清 host + sweep 归档 → 手机
+  `session host unavailable`、消息丢失。修复：`options.instanceId ?? getInstanceId()`，与 router
+  `myId` / tracker host 同空间（对齐 instance.ts 设计注释「定向接管目标用」）。multi-process 集成
+  测试显式传 `inst.getInstanceId()` 掩盖了此 bug——单测补 handoff 认领 / 目标不存在 reclaim 用例。
+
 ## [0.5.3] — 2026-08-09 · 开源发布准备 + 稳定性跟进
 
 ### Fixed

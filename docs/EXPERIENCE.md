@@ -505,6 +505,16 @@ session.enc 的 token 长度，再看 relay 日志有没有 connect 记录。（
 畸形 token 端到端验证零网络。**教训：扩展网络调用是否阻塞启动，取决于 handler 是否
 await——fire-and-forget 不阻塞，别凭「有网络调用」推断「拖慢启动」**。（skill 文档
 2026-08-19 的「扩展 session_start 网络 2-4s」是全部扩展总和，非 cindy 单点）
+### 53. 定向交接（handoff）目标 id 必须与会话 host 同一空间：仲裁器 instanceId 默认 randomUUID 与 getInstanceId() 分属两套 id
+
+仲裁器 `this.instanceId = options.instanceId ?? randomUUID()`，而会话 host / router `myId` 用
+`getInstanceId()`（instance.ts 进程级单例）。手机访问 standby 实例会话 → owner 写
+`handoff_to=<host值>` → 目标仲裁器 `handoffTo === this.instanceId` 永不相等 → 交接 100% 失败、
+10s TTL 过期 owner `reclaimed-own-row`，会话被清 host + sweep 归档，手机 `session host unavailable`、
+消息丢失（真机：三实例并存 + 手机消息触发交接复现）。修复 `options.instanceId ?? getInstanceId()`，
+对齐 instance.ts 注释「定向接管目标用」。**教训：multi-process 集成测试显式传
+`instanceId: inst.getInstanceId()` 恰好掩盖了默认值 bug——测试注入与生产默认值路径不一致时，
+默认值必须单测断言或集成测试走默认路径**。
 
 ## 附录：问题记录（原 ISSUES.md #1-62）
 
