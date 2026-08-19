@@ -6,6 +6,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **手机选模型后发送误路由到错误 provider（openrouter 402）**：同 id 模型跨 provider
+  存在时（如 `deepseek/deepseek-v4-flash` 在 commandcode-goat / openrouter /
+  volcengine-ark），`resolvePiModel` 全量首见命中未启用 provider → `pi.setModel`
+  切到 openrouter → 余额不足 402。修复：解析改为**白名单优先**（enabledModels /
+  `--models` scopedModels 内 provider+id 精确匹配，再纯 id），全量仅作白名单缺失
+  时的回退；`inputQueueFlush` / `inputSteer` 发送前 provider 收窄优先
+  `item.createOpts.providerId`（mobile 会话来源路由），缺省回落会话已存 providerId，
+  provider 不匹配时回退白名单纯 id（兼容历史脏 providerId）。
+
 ### Added
 
 - **启动零网络路径（启动无感优化）**：access token 磁盘缓存——`session.enc` 新增

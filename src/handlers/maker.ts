@@ -40,6 +40,8 @@ export interface QueuedRemoteMessage {
   permissionMode?: string;
   workingDir?: string;
   createOpts?: Record<string, unknown>;
+  /** 会话来源 provider 路由（mobile createOpts.providerId，desktop per-session 路由语义）。 */
+  providerId?: string;
   /** mobile isQueuedRemoteMessage 校验必填：chatMessage 记录（role === "user"）。 */
   chatMessage?: { clientId: string; role: "user"; content: string; createdAt?: string } & Record<string, unknown>;
 }
@@ -67,6 +69,15 @@ function readQueueItem(raw: unknown): QueuedRemoteMessage | null {
   if (typeof o.permissionMode === "string") item.permissionMode = o.permissionMode;
   if (typeof o.workingDir === "string") item.workingDir = o.workingDir;
   if (o.createOpts && typeof o.createOpts === "object") item.createOpts = o.createOpts as Record<string, unknown>;
+  // providerId 路由：mobile createOpts.providerId 是会话来源选择（desktop 语义
+  // hydrateProviderIdBeforeSessionStart），同 id 跨 provider 时据此消除歧义。
+  // 优先级：顶层显式 providerId > createOpts.providerId > 无。
+  const co = item.createOpts;
+  if (typeof o.providerId === "string" && o.providerId) {
+    item.providerId = o.providerId;
+  } else if (co && typeof co.providerId === "string" && co.providerId) {
+    item.providerId = co.providerId;
+  }
   // chatMessage 必须透传：mobile isQueuedRemoteMessage 校验 chatMessage.role === "user"，
   // 缺失则投影 pendingQueue 整段被过滤、队列 UI 空白。
   if (cm && typeof cm.clientId === "string" && cm.role === "user" && typeof cm.content === "string") {
@@ -169,8 +180,12 @@ export function inputQueueFlush(sid: string): void {
   void (async () => {
     try {
       // 模型/effort 是提示：解析失败不阻塞发送（手机端草稿可能与 pi 目录不同步）。
+      // provider 收窄：item.providerId（mobile createOpts 透传）优先，缺省回落
+      // 会话已存 providerId —— 同 id 跨 provider 时防全量首见命中错误来源。
       if (entry.item.model) {
-        const m = resolvePiModel(entry.item.model);
+        const s = getSession(sid);
+        const providerId = entry.item.providerId ?? s?.providerId ?? undefined;
+        const m = resolvePiModel(entry.item.model, providerId);
         if (m) await pi().setModel?.(m);
       }
       if (entry.item.effort) {
@@ -264,7 +279,9 @@ export async function inputSteer(args: unknown[]) {
     if (item.clientId) rememberClientId(sid, item.clientId);
     try {
       if (item.model) {
-        const m = resolvePiModel(item.model);
+        const s = getSession(sid);
+        const providerId = item.providerId ?? s?.providerId ?? undefined;
+        const m = resolvePiModel(item.model, providerId);
         if (m) await pi().setModel?.(m);
       }
       if (item.effort) pi().setThinkingLevel?.(normalizeEffort(item.effort));

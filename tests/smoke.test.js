@@ -177,6 +177,42 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await maker.setEffort([sid, 'ultra']);
   assert(setThinkingCalls.includes('max'), 'ultra 收敛到 max');
 
+  // ============ 5b. 同 id 跨 provider：白名单优先（修 openrouter 402 误路由） ============
+  // 复现真实故障：手机端只列白名单（enabledModels），但全量 modelRegistry 里同 id
+  // 还有未启用的 provider（如 openrouter）且排在前。发送侧 resolve 必须优先白名单，
+  // 否则全量首见命中错误来源 → setModel 到 openrouter → 402 余额不足。
+  const dscc = { id: 'deepseek/deepseek-v4-flash', name: 'DeepSeek V4 Flash', provider: 'commandcode-goat', reasoning: true, contextWindow: 128000, thinkingLevelMap: { high: 'high' } };
+  const dsor = { id: 'deepseek/deepseek-v4-flash', name: 'DeepSeek V4 Flash', provider: 'openrouter', reasoning: true, contextWindow: 128000, thinkingLevelMap: { high: 'high' } };
+  const dsvc = { id: 'deepseek/deepseek-v4-flash', name: 'DeepSeek V4 Flash', provider: 'volcengine-ark', reasoning: true, contextWindow: 128000, thinkingLevelMap: { high: 'high' } };
+  // 全量顺序故意把 openrouter 放最前（模拟 modelRegistry 注册序）：
+  runtime.captureRuntimeCtx({
+    modelRegistry: {
+      getAvailable: () => [dsor, dscc, dsvc, m1, m2],
+      getRegisteredProviderIds: () => ['openrouter', 'commandcode-goat', 'volcengine-ark', 'anthropic'],
+      getProviderDisplayName: (id) => ({ 'openrouter': 'OpenRouter', 'commandcode-goat': 'Command Code GOAT', 'volcengine-ark': 'Volcengine Ark', 'anthropic': 'Anthropic' })[id] ?? id,
+    },
+    scopedModels: [{ model: dscc, thinkingLevel: 'high' }, { model: m1, thinkingLevel: 'high' }],
+    abort: () => abortCalls.push(1),
+    isIdle: () => true,
+    compact: () => compactCalls.push(1),
+    getContextUsage: () => ({ tokens: 100, window: 200000 }),
+    model: dscc,
+  });
+  // 白名单内纯 id 解析 → 必须命中 commandcode-goat（非 openrouter）
+  const resolved = runtime.resolvePiModel('deepseek/deepseek-v4-flash');
+  assert(resolved && resolved.provider === 'commandcode-goat', 'resolvePiModel 白名单优先（同 id 跨 provider）', resolved && resolved.provider);
+  // provider 不匹配（历史脏 providerId=openrouter）→ 回退白名单纯 id，不再错误命中
+  const resolvedDirty = runtime.resolvePiModel('deepseek/deepseek-v4-flash', 'openrouter');
+  assert(resolvedDirty && resolvedDirty.provider === 'commandcode-goat', 'resolvePiModel provider 不匹配回退白名单', resolvedDirty && resolvedDirty.provider);
+  // enqueue 透传 createOpts.providerId：读队列项时拾取（复用前台 sid，先清历史脏 providerId）
+  store.updateSession(sid, { providerId: 'openrouter', model: 'deepseek/deepseek-v4-flash' });
+  const setModelBefore = setModelCalls.length;
+  await maker.inputEnqueue([sid, { clientId: 'cc1', text: 'via phone', model: 'deepseek/deepseek-v4-flash', createOpts: { model: 'deepseek/deepseek-v4-flash', providerId: 'commandcode-goat' } }]);
+  await sleep(50);
+  const lastSet = setModelCalls[setModelCalls.length - 1];
+  assert(setModelCalls.length === setModelBefore + 1, 'enqueue createOpts.providerId 触发 setModel');
+  assert(lastSet && lastSet.id === 'deepseek/deepseek-v4-flash' && lastSet.provider === 'commandcode-goat', 'enqueue 解析到白名单 provider（非 openrouter）', lastSet && lastSet.provider);
+
   // ============ 6. 其余 input 通道 ============
   maker.inputQueueMarkRunning(sid, true); // 标记 running 让队列堆积
   await maker.inputEnqueue([sid, { clientId: 'q1', text: 'msg1' }]);
@@ -1101,7 +1137,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     });
     const arbA = makeArb('A');
     makeArb('B'); // 不 start：目标实例不存在，交接必无人认领
-    const arbC = makeArb('C');
+    // C 是并发观察者：用更慢的探测节奏（heartbeat 60ms / stale 300ms），
+    // 只在 A 真正失效后才接管——CI 高负载下 A 的 renew 可能迟到，
+    // 若 C 与 A 同参数（20/100），A 心跳稍慢即被 C 误抢活 owner（flaky）。
+    const arbC = makeArb('C', { heartbeatMs: 60, staleMs: 300, fastPollMs: 30 });
     dbMod.getDb().prepare('DELETE FROM device_link_ownership').run();
     arbA.start(); // 阶段 1：仅 A（无 standby 竞争）——「唯一进程 self-handoff 后无人接管」自愈路径
     await sleep(80);

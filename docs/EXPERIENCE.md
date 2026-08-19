@@ -660,6 +660,7 @@ await——fire-and-forget 不阻塞，别凭「有网络调用」推断「拖�
 | 60 | **合成投影形状** | 复用现有 inputProjection 零新字段；get-projection 只读合成（不落邮箱不接管）；chatMessage 必须透传否则 mobile isQueuedRemoteMessage 过滤整段队列 |
 | 61 | **集成测试 worker stdin 解析** | `split(/ (.+)/)` 吞剩余整串 → sid 带空格 INVALID_PARAMS → worker 未捕获异常退出 → 场景静默失败；改先切前缀再按首空格分 |
 | 62 | **手机端 `/` palette CHANNEL_NOT_ALLOWED** | 三源 channel（list-agent-commands/list-agent-skills/list-desktop-commands）不在 invoke allowlist，Promise.all 任一 reject 即错误顶掉面板 | 用 pi.getCommands() 映射三源（extension→builtin；prompt+skill→skill）；失败容错空清单，契约形状对齐 composerPalette.ts | 冒烟 palette 断言 +11（三源形状 + getCommands 缺失/抛错容错）；typecheck 绿 |
+| 63 | **同 id 跨 provider 模型误路由（openrouter 402）** | 手机端只列白名单（enabledModels），但发送侧 `resolvePiModel` 在**全量** `snap.models` 按 id 首见——`deepseek/deepseek-v4-flash` 在 commandcode-goat/openrouter/volcengine-ark 都有，全量首见命中 openrouter → `pi.setModel` 切错源 → 402 余额不足；且 `readQueueItem` 不透传 createOpts.providerId，会话 providerId 被错误固化 | `resolvePiModel` 白名单优先（scopedModels 内 provider+id 精确 → 纯 id），全量仅回退；flush/steer 发送前 provider 收窄优先 item.createOpts.providerId，缺省回落 session.providerId，不匹配回退白名单纯 id；readQueueItem 透传 providerId | 冒烟 +4（白名单优先/provider 不匹配回退/createOpts 透传）；真机序列模拟：setModel+enqueue 均落 commandcode-goat |
 
 ---
 
