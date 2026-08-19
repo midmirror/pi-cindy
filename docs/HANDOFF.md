@@ -225,6 +225,16 @@
 - [x] 冒烟 289→297 断言（M4 语言偏好：locale 跟随/缓存/显式优先/0600/env 还原）；typecheck + lint 绿；
       PR #9（feat/status-bar-productization）
 
+### 2026-08-19 · 启动零网络优化（畸形 token 快速失败 + access token 磁盘缓存 + 延迟连接）
+
+- [x] **启动无感**：owner 场景 relay 网络（refresh + WS）延迟到 `setImmediate`（不占 session_start
+      同步段）；access token 磁盘缓存（`session.enc` 新增 `accessToken`/`accessExpiresAt`，启动未过期
+      零网络直连）；畸形 refresh token（<16 字符）快速失败——不发请求清会话提示重登
+- [x] **验证**：有/无 cindy 启动时间无差（6.5-8.3s，cindy import ~40ms）；隔离目录 + 畸形 token
+      端到端零网络；冒烟 307→309（20c/20d）；全门禁绿
+- [x] **发现**：本机 session.enc 被旧 dist（8-07，无守卫）污染 `refreshToken="rt"` → 每次启动
+      refresh 401、relay 永不连（手机端实际不可用）；新逻辑下次启动自动清理提示重登；dist 已 rebuild
+
 ## 未完成
 
 ### P1：会话路由真机验证清单（v0.5.0 已发布；自动化已覆盖握手，真机待跑）
@@ -259,42 +269,21 @@ grep -r "endpoint" ~/Library/Application\ Support/cindy/logs/ 2>/dev/null | head
 ## 文件索引
 
 ```
-~/.pi/agent/extensions/pi-cindy/          # symlink
-~/.agents/agent-configs/pi/extensions/pi-cindy/  # 实际路径
-├── AGENTS.md             # 规范：Commands / Must-know / HANDOFF 维护规范
-├── index.ts              # 入口：9 命令（login/logout/status/status-lang/connect/disconnect/remote/revoke/restore）+ 2 工具
-├── package.json          # scripts: test / typecheck / build（prepublishOnly 门禁）
-├── tsconfig.json         # strict + NodeNext（+ tsconfig.build.json 发布编译）
-├── tests/                # npm test = smoke + ownership + multi-process
-│   ├── smoke.test.js       # 297 断言冒烟（handler 层）
-│   ├── ownership.test.js   # 仲裁/热重载/交接（31 断言）
-│   ├── multi-process.test.js # 三进程集成（真跨进程 worker）
-│   └── store-sqlite / migration / node-sqlite-probe（辅助）
-├── docs/AGENTS.md → 见仓库根
-├── docs/DESIGN.md        # 设计方案（架构/协议/端点/数据流）
-├── docs/HANDOFF.md       # 本文件 — 交付状态（工作背景/已完成/未完成）
-├── docs/CHANGELOG.md     # 版本化变更记录
-├── docs/EXPERIENCE.md    # 踩坑与迭代经验 + 问题记录附录（唯一源）
+~/.pi/agent/extensions/pi-cindy/         # symlink → ~/.agents/agent-configs/pi/extensions/pi-cindy/
+├── index.ts                             # 入口：9 命令 + 2 工具
+├── tests/                               # npm test = smoke(309) + ownership(31) + multi-process
+├── docs/                                # DESIGN / HANDOFF / CHANGELOG / EXPERIENCE
 └── src/
-    ├── types.ts          # 端点烘焙默认（DEFAULT_ENDPOINTS，生效值以清单覆盖为准）
-    ├── endpoints.ts      # 端点热更新：CDN 清单解析 + 动态 getEndpoint
-    ├── dbg.ts            # 共享排障日志（relay-debug.log）
-    ├── runtime.ts        # Pi 运行态快照（ctx 能力捕获）
-    ├── tracker.ts
-    ├── ownership.ts      # 单持有者仲裁（SQLite 单行 CAS + 定向接管 handoffTo）
-    ├── instance.ts       # 进程级实例 UUID + cindy_instances 心跳
-    ├── handoff.ts        # 定向接管让位/认领逻辑
-    ├── auth/auth-client.ts
-    ├── auth/loopback.ts  # RFC 8252 loopback 回调（callbackUrl 为空时的登录回落）
-    ├── auth/refresh-lock.ts # 跨进程 refresh 互斥锁（进程内串行 + SQLite 单行锁）
-    ├── device-link/client.ts
-    ├── handlers/router.ts  # invoke 路由（65 channel allowlist + SESSION_LOCAL 宿主路由）
-    ├── handlers/{sessions,messages,maker,system,fs-browse}.ts
-    ├── store/db.ts       # SQLite（node:sqlite，WAL + busy_timeout，6 表）
-    ├── store/token-store.ts
-    ├── store/session-store.ts
-    ├── store/settings-store.ts # 授权黑名单/全局开关（JSON 原子写 0600）
-    ├── store/ui-prefs-store.ts # 状态栏语言偏好（JSON 原子写 0600 + 进程内缓存）
-    ├── store/handoff-store.ts  # DB 邮箱（cindy_handoff_mailbox）
-    └── store/migration.ts      # JSON→SQLite 一次性迁移
+    ├── types.ts                         # 端点烘焙默认 + 协议类型
+    ├── endpoints.ts                     # 端点热更新（CDN 清单 + getEndpoint）
+    ├── dbg.ts                           # relay-debug.log（0600 + 1MB 截断）
+    ├── runtime.ts                       # Pi 运行态快照（ctx 能力捕获）
+    ├── tracker.ts                       # 生命周期 → store + push
+    ├── ownership.ts                     # 单持有者仲裁（SQLite 单行 CAS + 定向接管）
+    ├── instance.ts                      # 进程实例 UUID + 心跳
+    ├── handoff.ts                       # 定向接管让位/认领
+    ├── auth/                            # auth-client / loopback / refresh-lock
+    ├── device-link/client.ts            # WS 客户端（握手/重连/订阅/push）
+    ├── handlers/                        # router（65 channel allowlist）+ sessions/messages/maker/system/fs-browse
+    └── store/                           # db(SQLite 6 表) / token / session / settings / ui-prefs / handoff / migration
 ```
