@@ -6,6 +6,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- **启动零网络路径（启动无感优化）**：access token 磁盘缓存——`session.enc` 新增
+  `accessToken`/`accessExpiresAt` 字段（可选，旧版文件兼容），进程启动时未过期
+  （留 60s 余量）则跳过 refresh 网络请求直接连 relay；登录/刷新成功时一并落盘。
+  畸形 refresh token 快速失败：`refreshToken` < 16 字符（服务端异常返回的垃圾值，
+  如 `"rt"`）直接判失效清会话提示重登，**不发网络请求**（此前每次启动 owner 场景
+  必发一次必然 401 的无效往返）。owner 场景 relay 连接（refresh + WS 握手）延迟到
+  `setImmediate` 执行——与 session_start handler 返回完全解耦，TUI 就绪不受任何
+  网络活动影响。
+
 ### Changed
 
 - **状态栏文案产品化 + 中英切换**（用户需求）：状态栏只展示主状态短词，技术细节

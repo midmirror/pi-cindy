@@ -670,6 +670,62 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   }
   globalThis.fetch = origFetch;
 
+  // ============ 20c. 畸形 refresh token 快速失败（启动无感：不发无效网络请求） ============
+  // 真机场景：session.enc 被旧版污染的 refreshToken="rt"（<16 字符）。getAccessToken 应
+  // 直接判失效清会话，**不发网络请求**（此前每次启动必发一次必然 401 的无效往返）。
+  const malformedCalls = [];
+  globalThis.fetch = async (url) => { malformedCalls.push(String(url)); return { ok: true, json: async () => ({}) }; };
+  await authClient.logout(); // 清内存缓存 + session.enc，保证走磁盘判定路径
+  malformedCalls.length = 0; // logout 自身调 /api/auth/logout，不计入本次断言
+  tokenStore.saveSession({ version: 1, realm: 'global', refreshToken: 'rt' }); // 畸形 token
+  const malformedResult = await authClient.getAccessToken('global');
+  assert(malformedResult === null, '畸形 refresh token → null（不发网络）');
+  assert(malformedCalls.length === 0, '畸形 refresh token 不发网络请求（启动无感核心）', malformedCalls);
+  assert(tokenStore.loadSession() === null, '畸形 refresh token → 清会话（提示重新登录）');
+  assert(authClient.isMalformedRefreshToken('rt') === true, '短 token 判畸形');
+  assert(authClient.isMalformedRefreshToken('good-rt-0123456789012345') === false, '长 token 非畸形');
+  assert(authClient.isMalformedRefreshToken(null) === true && authClient.isMalformedRefreshToken(undefined) === true, 'null/undefined 判畸形');
+
+  // ============ 20d. access token 磁盘缓存（启动零网络：未过期直接返回，不 refresh） ============
+  // 核心路径：进程启动 getAccessToken 应优先用落盘 access token（含 exp），未过期则零网络。
+  const cacheCalls = [];
+  globalThis.fetch = async (url) => { cacheCalls.push(String(url)); return { ok: true, json: async () => ({}) }; };
+  await authClient.logout(); // 清内存缓存
+  cacheCalls.length = 0; // logout 自身调 /api/auth/logout，不计入本次断言
+  const future = Date.now() + 3600_000; // 1h 后过期
+  tokenStore.saveSession({ version: 1, realm: 'global', refreshToken: 'good-rt-0123456789012345', accessToken: 'good-at-0123456789012345', accessExpiresAt: future });
+  const cached = await authClient.getAccessToken('global');
+  assert(cached === 'good-at-0123456789012345', '磁盘缓存命中：返回落盘 access token');
+  assert(cacheCalls.length === 0, '磁盘缓存命中：零网络请求（启动无感核心）', cacheCalls);
+  // 已过期 → 走 refresh
+  await authClient.logout();
+  cacheCalls.length = 0; // 重新计数（logout 自身请求不计入）
+  tokenStore.saveSession({ version: 1, realm: 'global', refreshToken: 'good-rt-0123456789012345', accessToken: 'stale-at-0123456789012345', accessExpiresAt: Date.now() - 1000 });
+  globalThis.fetch = async (url) => {
+    cacheCalls.push(String(url));
+    return { ok: true, json: async () => ({ accessToken: 'fresh-at-0123456789012345', refreshToken: 'fresh-rt-0123456789012345' }) };
+  };
+  const refreshed = await authClient.getAccessToken('global');
+  assert(refreshed === 'fresh-at-0123456789012345', '磁盘缓存过期 → refresh 拿新 token');
+  assert(cacheCalls.some((u) => u.includes('/api/auth/refresh')), '过期缓存 → 发起 refresh', cacheCalls);
+  // 刷新成功后落盘含 accessToken + exp（后续启动零网络依赖）
+  const sessionAfterRefresh = tokenStore.loadSession();
+  assert(sessionAfterRefresh?.accessToken === 'fresh-at-0123456789012345', '刷新后 access token 落盘', sessionAfterRefresh);
+  assert(typeof sessionAfterRefresh?.accessExpiresAt === 'number' && sessionAfterRefresh.accessExpiresAt > Date.now(), '刷新后 accessExpiresAt 落盘', sessionAfterRefresh);
+  // realm 不匹配：磁盘缓存是 global 但请求 cn → 不命中，走 refresh（防错区 token 连错 relay 401）
+  await authClient.logout();
+  cacheCalls.length = 0;
+  tokenStore.saveSession({ version: 1, realm: 'global', refreshToken: 'good-rt-0123456789012345', accessToken: 'global-at-0123456789012345', accessExpiresAt: Date.now() + 3600_000 });
+  globalThis.fetch = async (url) => {
+    cacheCalls.push(String(url));
+    return { ok: true, json: async () => ({ accessToken: 'cn-at-0123456789012345', refreshToken: 'cn-rt-0123456789012345' }) };
+  };
+  const realmMismatch = await authClient.getAccessToken('cn');
+  assert(realmMismatch === 'cn-at-0123456789012345', 'realm 不匹配 → 不命中磁盘缓存，走 refresh');
+  assert(cacheCalls.some((u) => u.includes('/api/auth/refresh')), 'realm 不匹配 → 发起 refresh', cacheCalls);
+  await authClient.logout();
+  globalThis.fetch = origFetch;
+
   // ============ 17. 被控授权门禁（revokedControllers / remoteControlEnabled，对齐 desktop dispatch.ts） ============
   const DeviceLinkClient = jiti(path.join(base, 'device-link/client.js')).DeviceLinkClient;
   const settingsStore = jiti(path.join(base, 'store/settings-store.js'));

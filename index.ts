@@ -183,11 +183,8 @@ export default function (pi: ExtensionAPI) {
         startSweep();
         startStaleSweep();
         setStatus(relayOnlineStatus());
-        ensureAndNotify();
-        // 接管后消费本进程会话的邮箱（client 就绪后，保证重放路径 push 可用）
-        ensureClient()
-          .then(() => { try { consumeMailboxForSession(activeId ?? ""); } catch { /* ok */ } })
-          .catch(() => {});
+        // 延迟补连：owner 网络路径 + 邮箱消费不占 session_start 同步段（启动无感）。
+        ensureClientDeferred();
         settleOwnership(true);
       },
       onDemote: () => {
@@ -359,6 +356,25 @@ export default function (pi: ExtensionAPI) {
   }
 
   /**
+   * 延迟到事件循环下一拍启动 owner 网络路径：refresh + WS 握手 + 邮箱消费
+   * 与 session_start handler 返回完全解耦（TUI 就绪不被任何网络活动影响；即便
+   * 未来 getAccessToken 增加同步段也不阻塞启动）。setImmediate 比 setTimeout(0)
+   * 更早，保证在首帧业务（tracker push）前 client 已开始连接。
+   * 邮箱消费挂同一 ensureClient 链（client 就绪后重放 pending 行），不额外并发。
+   */
+  function ensureClientDeferred(): void {
+    setImmediate(() => {
+      // 回调执行前可能已 shutdown/降级（quit 后 setImmediate 排队未执行）：
+      // 仲裁器已停或非 owner → 跳过，避免 quit 后白建连接。
+      if (!arbiter || !arbiter.isOwner()) return;
+      ensureAndNotify();
+      ensureClient()
+        .then(() => { try { consumeMailboxForSession(activeId ?? ""); } catch { /* ok */ } })
+        .catch(() => {});
+    }).unref?.();
+  }
+
+  /**
    * 补连 + 一次性 notify（onAcquire 与「仲裁器已在运行」的会话切换/重连共用）。
    * 修：曾只有 onAcquire 调 ensureClient——session_shutdown(new/fork/resume) 清空
    * client 后仲裁器仍在，下一次 session_start 的 startArbiter() 早退 → relay 永不重连，
@@ -399,8 +415,9 @@ export default function (pi: ExtensionAPI) {
       // 修：曾 startArbiter() 后同步判 isOwner() 恒 false——单实例也误报 standby。
       startArbiter();
       // 仲裁器已在运行（会话切换 new/fork/resume、/cindy-disconnect 后）：
-      // startArbiter 早退、onAcquire 不会再触发 → 持有者需主动补连（修回归）
-      if (arbiter?.isOwner()) ensureAndNotify();
+      // startArbiter 早退、onAcquire 不会再触发 → 持有者需主动补连（修回归）。
+      // 延迟执行：不占 session_start 同步段（启动无感）。
+      if (arbiter?.isOwner()) ensureClientDeferred();
     } else {
       // 未登录：状态栏应空。quit/reload 后 currentStatusKey 可能残留旧值，
       // 不清理会在未登录会话下经 /cindy-status-lang 把过期状态重新推上状态栏。

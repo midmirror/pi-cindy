@@ -16,6 +16,8 @@
 - **会话路由**：多 Pi 进程共享同一账号时，消息按会话路由到宿主实例（邮箱 + 定向接管，~1-2s）
 - **被控授权门禁**：`/cindy-revoke` / `/cindy-remote` 控制手机端访问（对齐 Desktop settings-store）
 - **PKCE 登录**：google/apple/email，RFC 8252 loopback 回调降级，token AES-256-GCM 本地加密存储
+- **启动零网络**：access token 磁盘缓存（未过期零 refresh 直连）+ 畸形 token 快速失败（不发无效
+  请求），relay 连接延迟到事件循环下一拍（不阻塞 Pi 启动）
 - **端点热更新**：启动/登录时从 Cindy CDN 拉取端点清单，覆盖烘焙默认值
 
 ## 安装

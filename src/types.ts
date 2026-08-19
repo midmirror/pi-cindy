@@ -98,7 +98,20 @@ export interface PiMessageMeta {
 }
 
 // Auth
-export interface AuthSessionRecord { version: 1; realm: "cn" | "global"; refreshToken: string; }
+/**
+ * 落盘会话。accessToken/accessExpiresAt 为磁盘 token 缓存（启动零网络）：
+ * 启动时未过期则跳过 refresh 网络请求，零网络连 relay。
+ * 旧版文件无此字段（undefined）→ 视作缓存缺失，走 refresh。
+ */
+export interface AuthSessionRecord {
+  version: 1;
+  realm: "cn" | "global";
+  refreshToken: string;
+  /** access token 磁盘缓存（可选，旧版无）。 */
+  accessToken?: string;
+  /** access token 过期时刻（ms epoch；可选）。 */
+  accessExpiresAt?: number;
+}
 export interface TokenPair {
   accessToken: string; refreshToken: string;
   membership: { id: string; passportId?: string; kind: "personal" | "org";

@@ -103,12 +103,54 @@ let cacheGeneration = 0;
 /** 在途 refresh promise：并发 getAccessToken 复用同一次刷新，防 refresh-token 轮转竞争（对齐 desktop authManager）。 */
 let refreshInFlight: Promise<string | null> | null = null;
 
+/** 刷新 token 最短长度（真实 refresh token 是 JWT/opaque 长串）；更短必为畸形（EXPERIENCE #42：
+ *  服务端异常时返回 refreshToken="rt" 覆盖好 token）。小于此值直接判失效，不发网络请求。 */
+export const MIN_REFRESH_TOKEN_LENGTH = 16;
+
+/** 畸形 refresh token 判定（同 isValidTokenPair 的守卫口径，供启动路径免网络快速失败）。 */
+export function isMalformedRefreshToken(rt: string | undefined | null): boolean {
+  return typeof rt !== "string" || rt.length < MIN_REFRESH_TOKEN_LENGTH;
+}
+
+/** access token 磁盘缓存是否仍有效（未过期 + 留 60s 余量 + realm 匹配）。 */
+function isDiskTokenValid(
+  session: { realm?: "cn" | "global"; accessToken?: string; accessExpiresAt?: number } | null,
+  realm: "cn" | "global",
+): session is { accessToken: string; accessExpiresAt: number } & object {
+  return !!session
+    && session.realm === realm
+    && typeof session.accessToken === "string"
+    && session.accessToken.length >= MIN_REFRESH_TOKEN_LENGTH
+    && typeof session.accessExpiresAt === "number"
+    && session.accessExpiresAt > Date.now() + 60_000;
+}
+
 export async function getAccessToken(realm: "cn" | "global" = "global"): Promise<string | null> {
   if (cachedToken && Date.now() < cachedExp - 60_000) return cachedToken;
+  // 磁盘缓存命中（进程首次）：未过期直接返回，零网络（启动无感核心路径）。
+  // 需在 refreshInFlight 单飞之前：并发启动路径（ensureClient + 登录命令）复用同一磁盘 token。
+  if (!cachedToken) {
+    const diskSession = loadSession();
+    if (isDiskTokenValid(diskSession, realm)) {
+      cachedToken = diskSession.accessToken;
+      cachedExp = diskSession.accessExpiresAt;
+      return cachedToken;
+    }
+  }
   if (refreshInFlight) return refreshInFlight;
   refreshInFlight = (async () => {
     const gen = cacheGeneration;
     try {
+      // 畸形 refresh token 快速失败：不发网络请求（启动无感：避免每次启动白付一次必然
+      // 401 的无效往返）。与 401 分支对称：清会话强制重新登录（EXPERIENCE #42 语义）。
+      const preSession = loadSession();
+      if (!preSession) return null;
+      if (isMalformedRefreshToken(preSession.refreshToken)) {
+        dbgLog(`auth refresh skipped: malformed refresh token (len=${preSession.refreshToken?.length ?? 0}) — clearing session`);
+        cachedToken = null; cachedExp = 0;
+        if (gen === cacheGeneration) clearSession();
+        return null;
+      }
       // 跨进程互斥（EXPERIENCE #23/#46 遗留技术债）：多 pi 进程 / 热重载叠加时并发
       // refresh 同一 refresh token → 服务端 rotation 竞争 → 家族撤销 401 → 误清会话。
       // withRefreshLock 锁内**重读 session.enc**（可能已被他进程轮换落盘新 token），
@@ -140,13 +182,14 @@ export async function getAccessToken(realm: "cn" | "global" = "global"): Promise
         return null;
       }
       consecutiveMalformedCount = 0; // 成功刷新：计数复位
-      saveSession({ version: 1, realm: r, refreshToken: pair.refreshToken });
-      dbgLog(`auth refresh ok (${r})`);
       cachedToken = pair.accessToken;
       try {
         const payload = JSON.parse(Buffer.from(pair.accessToken.split(".")[1], "base64url").toString());
         cachedExp = payload.exp * 1000;
       } catch { cachedExp = Date.now() + 3600_000; }
+      // 落盘：refresh token + access token 磁盘缓存（启动零网络路径依赖）
+      saveSession({ version: 1, realm: r, refreshToken: pair.refreshToken, accessToken: pair.accessToken, accessExpiresAt: cachedExp });
+      dbgLog(`auth refresh ok (${r})`);
       return cachedToken;
     } catch (err) {
       cachedToken = null;
@@ -213,12 +256,13 @@ function savePair(realm: "cn" | "global", pair: AuthTokenPair) {
   }
   consecutiveMalformedCount = 0; // 新 token 族 = 新计数起点（修：曾残留旧 streak，重登后首刷畸形即误触上限清会话）
   cacheGeneration += 1; // 使在途 refresh 结果失效（修：登录/换码与在途刷新并发时旧刷新会覆盖新会话）
-  saveSession({ version: 1, realm, refreshToken: pair.refreshToken });
+  // 登录成功：access token 一并落盘（磁盘缓存，启动零网络路径依赖）
   cachedToken = pair.accessToken;
   try {
     const payload = JSON.parse(Buffer.from(pair.accessToken.split(".")[1], "base64url").toString());
     cachedExp = payload.exp * 1000;
   } catch { cachedExp = Date.now() + 3600_000; }
+  saveSession({ version: 1, realm, refreshToken: pair.refreshToken, accessToken: pair.accessToken, accessExpiresAt: cachedExp });
 }
 
 function assertSocialAvailable(providers: ProviderConfig, provider: SocialProvider): void {

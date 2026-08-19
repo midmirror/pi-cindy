@@ -480,6 +480,32 @@ Node 把 **字符串 "undefined"** 写入 env——truthy，`resolveSystemLocale
 **方法**：还原 env 用 `if (saved === undefined) delete process.env.X; else process.env.X = saved;`，
 且包 try/finally（断言失败也还原）。**教训：env 是字符串字典，undefined 不是「删除」**。
 
+### 51. 畸形 refresh token 每启动白付一次 401 网络往返——启动路径要「免网络快速失败」
+
+真机复现（2026-08-19）：`~/.pi/cindy-sync/session.enc` 被旧版（8-07 dist，无
+`isValidTokenPair` 守卫）污染的畸形 token `refreshToken="rt"`。旧逻辑每次 pi 启动（owner
+场景）→ `getAccessToken` → refresh 网络请求 → 服务端 401 → 失败 → relay 永不连接
+（手机端功能实际不可用），且每次启动白付一次必然失败的无效往返。日志里永远看不到
+`connect →` / `hello-ack`（refresh 失败在前），误以为是 relay 问题。
+
+**方法**：启动路径加「免网络快速失败」——refresh token <16 字符直接判畸形，不发请求
+清会话提示重登（与 401 分支对称）。同类：access token 磁盘缓存（`session.enc` 存
+`accessToken`/`accessExpiresAt`）让启动未过期时零网络直连。**教训：启动路径的网络调用
+必须能在「数据本身已无效」时跳过，不能每次赌服务端响应**；排查「手机端连不上」先看
+session.enc 的 token 长度，再看 relay 日志有没有 connect 记录。（问题记录 #42/#46 延伸）
+
+### 52. 扩展「启动慢」诊断：先量化再动手，别被 fire-and-forget 误判
+
+用户反馈「pi-cindy 启动网络连接拖慢启动」。实测：import 37-41ms；session_start handler
+**不 await** 任何网络（ensureClient fire-and-forget）；有/无 cindy 扩展启动时间无差
+（6.5-8.3s 波动内）。真正的慢源是其它扩展（dynamic-workflows 245-296ms / subagents
+182-215ms 等）+ TUI init + session_start 状态重建，与 cindy 无关。
+
+**方法**：`PI_TIMING=1` 看 import 耗时；`/usr/bin/time` 对比有/无扩展；隔离数据目录 +
+畸形 token 端到端验证零网络。**教训：扩展网络调用是否阻塞启动，取决于 handler 是否
+await——fire-and-forget 不阻塞，别凭「有网络调用」推断「拖慢启动」**。（skill 文档
+2026-08-19 的「扩展 session_start 网络 2-4s」是全部扩展总和，非 cindy 单点）
+
 ## 附录：问题记录（原 ISSUES.md #1-62）
 
 > 2026-08-06 · ISSUES.md 已删除并入本文件。问题表为历史快照（根因/修复/验证），

@@ -58,7 +58,8 @@
   WAL + busy_timeout(3000)，多进程并发写安全；主库/-wal/-shm 权限统一收敛 0600；
   open 期 PRAGMA quick_check 检测页面级损坏，失败隔离改名 `.corrupt-<ts>` 重建）
 - 所有权: `device_link_ownership` 单行表 CAS（一 owner 一 standby，5s 心跳 / 15s 过期接管 / 退出秒级释放）
-- Token: `~/.pi/cindy-sync/session.enc`（AES-256-GCM 加密，key 从 hostname+username 派生）
+- Token: `~/.pi/cindy-sync/session.enc`（AES-256-GCM 加密，key 从 hostname+username 派生；
+  含 refresh token + access token 磁盘缓存（`accessToken`/`accessExpiresAt`，启动未过期则零网络直连））
 - settings: `settings.json` JSON 原子写（跨进程锁 + pid 后缀 tmp）+ 0600；
   损坏/不可读 fail-closed（remote 关），缺失文件回落默认
 - 旧 JSON（sessions.json + messages/）v0.4.0 已清理（见 CHANGELOG）
@@ -70,7 +71,9 @@
 - 系统浏览器打开 authorization URL
 - 轮询 `/api/auth/desktop/callback/poll` 获取授权码
 - 兑换 `/api/auth/token` 获取 access/refresh token
-- refresh token 用 AES-256-GCM 加密落盘，key 从 hostname+username 派生
+- refresh token + access token 缓存（含 exp）用 AES-256-GCM 加密落盘，key 从 hostname+username 派生；
+  进程启动时 access token 未过期（留 60s 余量）则零网络直连 relay，过期才走 refresh
+- 畸形 refresh token（<16 字符，服务端异常垃圾值）启动时免网络快速失败——不发请求直接清会话提示重登
 
 ### 4. invoke allowlist 精简（62 channel）
 
@@ -126,7 +129,8 @@ Pi Extension              Auth Server              Browser
      │ POST /api/auth/token   │                       │
      │◄─── { accessToken, refreshToken, membership }  │
      │                        │                       │
-     │ 持久化 refreshToken    │                       │
+     │ 持久化 refreshToken + accessToken 缓存          │
+     │（accessExpiresAt 落盘；启动未过期零网络直连）   │
 ```
 
 ## 文件结构
