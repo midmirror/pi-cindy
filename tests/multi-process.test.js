@@ -35,7 +35,7 @@ const arb = new DeviceLinkOwnershipArbiter({
     handoff.consumeMailboxForSession(activeId || '').catch(() => {});
   },
   onDemote: () => { console.log(process.argv[1] + ' DEMOTED'); },
-  heartbeatMs: 30, staleMs: 200, fastPollMs: 20, storeRetryMs: 10, opTimeoutMs: 30,
+  heartbeatMs: 30, staleMs: 400, fastPollMs: 20, storeRetryMs: 10, opTimeoutMs: 30,
 });
 router.setInvokeContext({
   pi: fakePi, push: () => {}, activeSessions: new Map(),

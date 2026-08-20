@@ -95,8 +95,29 @@ export function isRuntimeIdle(): boolean { return snap.isIdle ? snap.isIdle() : 
 export function compactRuntime(): void { snap.compact?.(); }
 export function getRuntimeContextUsage(): unknown { return snap.getContextUsage?.(); }
 
-/** 按模型 id（可选 provider 收窄）解析 pi 模型。 */
+/**
+ * 按模型 id（可选 provider 收窄）解析 pi 模型。
+ *
+ * 解析优先级（对齐 desktop per-session provider 路由语义）：
+ *  1. 白名单（scopedModels，enabledModels/--models 匹配结果）内 provider+id 精确匹配；
+ *  2. 白名单内纯 id 匹配（同 id 只可能命中白名单内那条）；
+ *  3. 全量 provider+id 精确匹配；
+ *  4. 全量纯 id 首见。
+ * 白名单优先是修同 id 跨 provider 歧义的关键：手机端模型选择器只列白名单
+ * （getRuntimeModels），发送侧必须解析回白名单内那条，否则全量首见可能命中
+ * 同名但未启用的 provider（如 openrouter 的 deepseek 与 commandcode-goat 的
+ * deepseek，前者 402 余额不足）。
+ */
 export function resolvePiModel(modelId: string, providerId?: string): any | undefined {
+  const scoped = snap.scopedModels.map((s) => s?.model).filter(Boolean);
+  if (scoped.length > 0) {
+    if (providerId) {
+      const byProvider = scoped.find((m) => m.id === modelId && m.provider === providerId);
+      if (byProvider) return byProvider;
+    }
+    const bare = scoped.find((m) => m.id === modelId);
+    if (bare) return bare;
+  }
   const models = snap.models;
   if (providerId) {
     const byProvider = models.find((m) => m.id === modelId && m.provider === providerId);
