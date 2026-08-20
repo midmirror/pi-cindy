@@ -224,6 +224,63 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const afterRacer = lockDb.prepare('SELECT owner_pid FROM refresh_lock WHERE id=1').get();
   assert(afterRacer.owner_pid === 77777, '释放只清自己的锁，不误清他人抢占的锁');
 
+  // ============ 定向交接（handoff）目标认领 ============
+  // 回归：仲裁器 instanceId 曾默认 randomUUID，与 tracker 会话 host（getInstanceId，
+  // instance.ts 进程级单例）不同 id 空间 → owner 写的 handoff_to（host 值）不可能等于
+  // 目标仲裁器 this.instanceId → 交接 100% 失败、TTL 过期后 owner reclaim-own-row
+  // （真机：手机消息触发 owner→standby 交接，无人认领，手机 session host unavailable）。
+  // 修复：options.instanceId ?? getInstanceId()。测试显式传 instanceId 模拟跨进程。
+  // 1) 目标匹配：H1 owner → handoffTo('inst-b') → H2 认领接管
+  dbMod.getDb().prepare('DELETE FROM device_link_ownership').run();
+  const evH1 = [], evH2 = [];
+  const arbH1 = new DeviceLinkOwnershipArbiter({
+    getStore: () => createSqliteOwnershipStore(dbMod.getDb()),
+    instance: { ownerPid: 1001, ownerLabel: 'h1' },
+    instanceId: 'inst-a',
+    onAcquire: () => evH1.push('acquire'),
+    onDemote: () => evH1.push('demote'),
+    heartbeatMs: 20, staleMs: 200, fastPollMs: 20, storeRetryMs: 5, opTimeoutMs: 20, handoffTtlMs: 500,
+  });
+  const arbH2 = new DeviceLinkOwnershipArbiter({
+    getStore: () => createSqliteOwnershipStore(dbMod.getDb()),
+    instance: { ownerPid: 1002, ownerLabel: 'h2' },
+    instanceId: 'inst-b',
+    onAcquire: () => evH2.push('acquire'),
+    onDemote: () => evH2.push('demote'),
+    heartbeatMs: 20, staleMs: 200, fastPollMs: 20, storeRetryMs: 5, opTimeoutMs: 20, handoffTtlMs: 500,
+  });
+  arbH1.start();
+  arbH2.start();
+  await sleep(120);
+  assert(arbH1.isOwner() && arbH2.isStandby(), 'handoff 前：H1 持有、H2 待命');
+  assert(await arbH1.handoffTo('inst-b'), 'H1 写交接信号成功');
+  await sleep(150);
+  assert(evH2.filter(e => e === 'acquire').length >= 1, '目标 H2 认领交接（handoff-target）');
+  assert(arbH2.isOwner() && !arbH1.isOwner(), '交接后 H2 持有、H1 让位');
+  assert(evH1.filter(e => e === 'demote').length >= 1, 'H1 降级（handoff demote）');
+  await Promise.all([arbH1.stop(), arbH2.stop()]);
+
+  // 2) 目标不匹配/不存在：无人认领 → TTL 过期 → owner 自己 reclaim 仍持有
+  dbMod.getDb().prepare('DELETE FROM device_link_ownership').run();
+  const evH3 = [];
+  const arbH3 = new DeviceLinkOwnershipArbiter({
+    getStore: () => createSqliteOwnershipStore(dbMod.getDb()),
+    instance: { ownerPid: 1003, ownerLabel: 'h3' },
+    instanceId: 'inst-c',
+    onAcquire: () => evH3.push('acquire'),
+    heartbeatMs: 20, staleMs: 200, fastPollMs: 20, storeRetryMs: 5, opTimeoutMs: 20, handoffTtlMs: 60,
+  });
+  arbH3.start();
+  await sleep(120);
+  assert(arbH3.isOwner(), 'H3 持有');
+  assert(await arbH3.handoffTo('inst-nonexistent'), 'H3 写交接信号（目标不存在）');
+  assert(!arbH3.isOwner(), '交接后 H3 已让位（等待认领）');
+  await sleep(180); // > TTL 60ms
+  assert(arbH3.isOwner(), '目标不存在：TTL 过期后 H3 reclaim 仍持有');
+  const h3row = await store.read();
+  assert(h3row.handoffTo === null && h3row.handoffExpiresAt === null, '过期交接信号已被清（reclaim 后无残留）');
+  await arbH3.stop();
+
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures ? 1 : 0);
 })().catch((e) => { console.error('TEST CRASH', e); process.exit(1); });

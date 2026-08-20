@@ -29,6 +29,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { dbgLog } from './dbg.js';
+import { getInstanceId } from './instance.js';
 
 /** desktop createLogger 分级接口 → dbgLog(单参数 string)。错误对象降级为 message。 */
 const fmt = (args: unknown[]): string =>
@@ -205,7 +206,12 @@ export class DeviceLinkOwnershipArbiter {
       throw new Error(`staleMs (${staleMs}) must be > 2 * heartbeatMs (${heartbeatMs})`);
     }
     this.opts = { ...options, heartbeatMs, staleMs, storeRetryMs, opTimeoutMs, fastPollMs, handoffTtlMs };
-    this.instanceId = options.instanceId ?? randomUUID();
+    // 定向接管目标匹配必须与 tracker 会话 host / router myId 同一 id 空间
+    // （getInstanceId，instance.ts 进程级单例；cindy_instances.instance_id 同源）。
+    // 曾默认 randomUUID()：host（getInstanceId 空间）写入 handoff_to 后，目标仲裁器
+    // 比较 handoffTo === this.instanceId 永不相等 → 交接 100% 失败、10s TTL 过期后
+    // owner reclaim-own-row（真机：手机消息触发 standby 交接，手机 session host unavailable）。
+    this.instanceId = options.instanceId ?? getInstanceId();
     this.identity = this.buildIdentity();
   }
 
