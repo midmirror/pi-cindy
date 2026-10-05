@@ -27,8 +27,11 @@ const ALLOWED = new Set([
   "maker:input:clear-error", "maker:input:remove", "maker:input:update-text",
   "maker:input:update-content", "maker:input:move", "maker:input:set-expanded",
   "maker:input:set-interaction-lock", "maker:input:set-edit-lock", "maker:input:clear-session",
-  // 手机端模型选择器辅助接口（provider 目录 / 价格 / 网关 key）
-  "maker:provider:list", "maker:usage:model-pricing", "maker:api-key:present",
+  // 手机端模型选择器辅助接口（价格 / 网关 key）。注意：maker:provider:list 故意不在
+  // allowlist——手机端仅在该通道 reject(CHANNEL_NOT_ALLOWED)时才回退 capabilities 扁平列表
+  // （modelPickerSheetModel.canUseFlatModelFallback / isDeviceProvidersUnsupportedError）；
+  // 「成功返回空目录」会被当作权威空目录 → 选择器无模型可选（真机验证 0.1.11 复现）。
+  "maker:usage:model-pricing", "maker:api-key:present",
   "local-db:sessions:list", "local-db:sessions:get",
   "local-db:messages:list", "local-db:messages:around", "local-db:messages:around-client-id",
   "local-db:recent-workdirs:list",
@@ -202,7 +205,6 @@ export async function routeInvoke(channel: string, args: unknown[]): Promise<unk
     case "maker:input:set-interaction-lock": return maker.inputSetInteractionLock(args);
     case "maker:input:set-edit-lock": return maker.inputSetEditLock(args);
     case "maker:input:clear-session": return maker.inputClearSession(args);
-    case "maker:provider:list": return maker.providerList(args);
     case "maker:usage:model-pricing": return maker.usageModelPricing(args);
     case "maker:api-key:present": return maker.apiKeyPresent(args);
     case "maker:create-session": return maker.createSessionHandler(args);

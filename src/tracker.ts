@@ -123,7 +123,7 @@ export function attachSessionTracker(
       const clientId = getSteeringClientId(sid) ?? undefined;
       const m = appendMessage({ id: randomUUID(), sessionId: sid, role: "user", content: text, clientId, createdAt: Date.now() });
       const c = getClient();
-      if (c) c.push("local-db:messages:created", { sessionId: sid, message: { id: m.id, clientId: clientId ?? null, sessionId: sid, role: "user", content: text, createdAt: iso(m.createdAt) } }, sid);
+      if (c) c.push("local-db:messages:created", { sessionId: sid, message: { id: m.id, clientId: clientId ?? m.id, sessionId: sid, role: "user", content: text, toolUseId: null, agentMeta: null, agentKind: "pi" as const, createdAt: iso(m.createdAt) } }, sid);
     }
 
     if (event.message.role === "assistant") {
@@ -148,12 +148,18 @@ export function attachSessionTracker(
       if (!c) return;
       // push 只带 500 字摘要 + remoteContentTruncated 标记（mobile 据此经 messages:list 拉全文，
       // 不标记会被当作完整内容永久截断显示）；store 始终存全量。
+      // push 帧与 mapMessage 同形状：clientId 恒 string（旧版手机端 null 即崩）、
+      // extras 进 agentMeta、恒带 agentKind（见 handlers/messages.ts mapMessage 注释）。
       const truncated = text.length > 500;
       const pushedContent = truncated ? text.slice(0, 500) : text;
-      const pushedAgentMeta = truncated ? { [REMOTE_CONTENT_TRUNCATED]: true } : null;
+      const pushedAgentMeta = truncated
+        ? { [REMOTE_CONTENT_TRUNCATED]: true }
+        : (m.model != null || m.provider != null || m.usage != null || m.stopReason != null
+            ? { model: m.model ?? null, provider: m.provider ?? null, usage: m.usage ?? null, stopReason: m.stopReason ?? null }
+            : null);
       c.push("local-db:messages:created", {
         sessionId: sid,
-        message: { id: m.id, clientId: m.clientId ?? null, sessionId: sid, role: "assistant", content: pushedContent, toolUseId: null, agentMeta: pushedAgentMeta, model: m.model, provider: m.provider, usage: m.usage, stopReason: m.stopReason, createdAt: iso(m.createdAt) },
+        message: { id: m.id, clientId: m.clientId ?? m.id, sessionId: sid, role: "assistant", content: pushedContent, toolUseId: null, agentMeta: pushedAgentMeta, agentKind: "pi" as const, createdAt: iso(m.createdAt) },
       }, sid);
       if (updated) {
         c.push("usage:session-spend-changed", { sessionId: sid, totalCostUsd: updated.totalCostUsd }, sid);

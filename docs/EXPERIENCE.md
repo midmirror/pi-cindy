@@ -516,6 +516,18 @@ await——fire-and-forget 不阻塞，别凭「有网络调用」推断「拖�
 `instanceId: inst.getInstanceId()` 恰好掩盖了默认值 bug——测试注入与生产默认值路径不一致时，
 默认值必须单测断言或集成测试走默认路径**。
 
+### 54. 「返回空即回退」的容错假设要以旧版手机端源码为准：两处「想当然回退」一崩一空
+
+两处独立翻车：① 消息行 `clientId: null`——desktop 恒发 string，旧版手机端（iOS 国行 0.1.11
+一线）渲染即崩，新版 `messageKey` 有 `message.id || message.clientId || ...` 兜底故 main 分支
+源码对拍全绿也发现不了；② `maker:provider:list` 返回 `{providers: []}`——手机端
+`canUseFlatModelFallback` 仅在通道 reject(CHANNEL_NOT_ALLOWED) 时回退扁平列表，「成功空目录」
+= 权威空目录 → 选择器 "no matching models"。两处注释都写着「手机端会回退」，实际都不会。
+
+**方法**：旧版客户端在网分发、不可开级——wire 契约不能只对拍 main 分支源码，要以
+**oldest-supported 手机端**的实际容错为准。定位手段：`relay-debug.log` 还原崩溃前最后一个
+invoke → 造「最小行」DIAG 会话逐字段二分（每轮真机验证，一次收敛到 clientId）。
+
 ## 附录：问题记录（原 ISSUES.md #1-62）
 
 > 2026-08-06 · ISSUES.md 已删除并入本文件。问题表为历史快照（根因/修复/验证），
