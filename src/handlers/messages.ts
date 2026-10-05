@@ -35,12 +35,24 @@ function iso(v: number | null | undefined): string | null {
   return v == null ? null : new Date(v).toISOString();
 }
 
+/**
+ * 消息行 → 手机端 wire 形状（对齐 desktop messageToCamel）：
+ *  - clientId 恒为 string：旧版手机端（iOS 国行 appVersion 0.1.11 一线）对 clientId:null
+ *    的消息行渲染即崩（白屏闪退，真机二分验证）；desktop 恒发 string clientId。
+ *    Pi 自身消息无 clientId → 用消息 id 兜底（跨 list/push 稳定，手机端可去重）。
+ *  - agentKind 恒为 "pi"（desktop 每行都带；旧版手机端缺字段时行为本定义）。
+ *  - model/provider/usage/stopReason 不作顶层多余字段，移入 agentMeta（desktop 位置；
+ *    旧实现放顶层是扩展自发明形状，手机端并不读取）。
+ */
 function mapMessage(m: PiMessageMeta) {
+  const hasMeta = m.model != null || m.provider != null || m.usage != null || m.stopReason != null;
+  const agentMeta = hasMeta
+    ? { model: m.model ?? null, provider: m.provider ?? null, usage: m.usage ?? null, stopReason: m.stopReason ?? null }
+    : null;
   return {
-    id: m.id, clientId: m.clientId ?? null, sessionId: m.sessionId, role: m.role, content: m.content,
-    toolUseId: null, agentMeta: null,
-    model: m.model, provider: m.provider, usage: m.usage,
-    stopReason: m.stopReason, createdAt: iso(m.createdAt),
+    id: m.id, clientId: m.clientId ?? m.id, sessionId: m.sessionId, role: m.role, content: m.content,
+    toolUseId: null, agentMeta, agentKind: "pi" as const,
+    createdAt: iso(m.createdAt),
   };
 }
 

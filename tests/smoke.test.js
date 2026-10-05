@@ -240,8 +240,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   assert(p.pendingQueue.length === 0 && p.error === null, 'inputClearSession 清空');
 
   // ============ 7. router 可达性 ============
-  const prov = await router.routeInvoke('maker:provider:list', [{}]);
-  assert(Array.isArray(prov.providers) && prov.providers.length === 0, 'provider:list 返回空 providers（手机端回退扁平列表）');
+  // maker:provider:list 故意不在 allowlist：手机端仅在该通道 reject(CHANNEL_NOT_ALLOWED)时
+  // 回退 capabilities 扁平列表；「成功返回空目录」会被当作权威空目录 → 选择器无模型可选。
+  try { await router.routeInvoke('maker:provider:list', [{}]); assert(false, 'provider:list 应 CHANNEL_NOT_ALLOWED'); }
+  catch (e) { assert(e.code === 'CHANNEL_NOT_ALLOWED', 'provider:list 拒绝以触发手机端扁平回退', e.code); }
   const pricing = await router.routeInvoke('maker:usage:model-pricing', []);
   assert(typeof pricing === 'object', 'model-pricing 不报错');
   const key = await router.routeInvoke('maker:api-key:present', []);
@@ -361,6 +363,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   assert(rows[0].id === 'm-5' && rows[rows.length - 1].id === 'm-3', 'after 游标：严格晚于 + 降序', rows.map((r) => r.id));
   rows = await messages.list([msid, { beforeTs: 2500, limit: 10 }]);
   assert(rows[0].id === 'm-2' && rows.length === 2, 'beforeTs 毫秒兜底', rows.map((r) => r.id));
+
+  // ============ 10b. 消息行 wire 形状（旧版手机端兼容，对齐 desktop messageToCamel） ============
+  // 旧版手机端（iOS 国行 0.1.11 一线）对 clientId:null 的消息行渲染即崩；desktop 恒发 string。
+  // extras（model/provider/usage/stopReason）必须在 agentMeta 内，不作顶层多余字段。
+  const plain = rows[0];
+  assert(typeof plain.clientId === 'string' && plain.clientId === plain.id, '无 clientId 的行用消息 id 兜底（恒 string）', plain.clientId);
+  assert(plain.agentKind === 'pi', '消息行恒带 agentKind');
+  assert(plain.agentMeta === null && !('model' in plain) && !('usage' in plain) && !('stopReason' in plain) && !('provider' in plain), '纯文本行无 extras（不在顶层）');
+  store.appendMessage({ id: 'm-meta', sessionId: msid, role: 'assistant', content: 'with meta', model: 'glm-5.3', provider: 'zai', usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 0, totalTokens: 6 }, stopReason: 'toolUse', createdAt: 9999 });
+  const metaRows = await messages.list([msid, { limit: 1 }]);
+  const metaRow = metaRows[0];
+  assert(metaRow.id === 'm-meta' && typeof metaRow.clientId === 'string', '带 meta 行 clientId 恒 string');
+  assert(metaRow.agentMeta && metaRow.agentMeta.model === 'glm-5.3' && metaRow.agentMeta.usage.totalTokens === 6 && metaRow.agentMeta.stopReason === 'toolUse', 'extras 进 agentMeta', metaRow.agentMeta);
+  assert(!('model' in metaRow) && !('usage' in metaRow) && !('stopReason' in metaRow) && !('provider' in metaRow), 'extras 不在顶层');
 
   // ============ 11. messages:around / around-client-id ============
   const aroundRows = await messages.around([msid, 'm-3', { radius: 1 }]);

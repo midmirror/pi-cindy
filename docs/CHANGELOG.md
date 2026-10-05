@@ -8,6 +8,20 @@
 
 ### Fixed
 
+- **旧版手机端打开含消息会话即白屏闪退（iOS 国行 appVersion 0.1.11 一线）**：
+  `mapMessage` 对无 clientId 的消息行发 `clientId: null`，而 desktop
+  （`messageToCamel`）恒发 string clientId；该版本手机端渲染消息行对 clientId
+  无空值保护 → 任意含消息会话点开即崩（空会话不崩）。真机逐字段二分定位
+  （纯 ASCII 最小行 + string clientId 即不崩）。修复：消息行 clientId 缺失时用
+  消息 id 兜底（list/push 同源稳定，手机端可去重）；同时消息行恒带
+  `agentKind: "pi"`、model/provider/usage/stopReason 移入 `agentMeta`
+  （对齐 desktop wire 形状，不再作顶层多余字段）。
+- **旧版手机端模型选择器 "no matching models"**：`maker:provider:list`
+  成功返回空目录被手机端当作「权威空目录」（`canUseFlatModelFallback` 仅在通道
+  reject(CHANNEL_NOT_ALLOWED) 时才回退 capabilities 扁平列表），选择器无模型
+  可选。修复：从 router allowlist 摘除该通道（handler 一并移除），手机端走
+  旧被控端路径回退扁平列表（真机验证恢复显示）。
+
 - **手机选模型后发送误路由到错误 provider（openrouter 402）**：同 id 模型跨 provider
   存在时（如 `deepseek/deepseek-v4-flash` 在 commandcode-goat / openrouter /
   volcengine-ark），`resolvePiModel` 全量首见命中未启用 provider → `pi.setModel`

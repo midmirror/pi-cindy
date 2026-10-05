@@ -683,10 +683,10 @@ export async function generateTitle(args: unknown[]) {
 
 // ---------- provider / usage（手机端模型选择器辅助，容忍性接口） ----------
 
-/** 手机端 provider-aware 模式数据源；pi 无目录 → 返回空，手机端回退 capabilities 扁平列表。 */
-export async function providerList(_args: unknown[]) {
-  return { providers: [], modelVisibilityOverrides: {} };
-}
+// maker:provider:list 已从 router allowlist 摘除（pi 无供应商目录）：手机端仅在通道
+// reject(CHANNEL_NOT_ALLOWED)时回退 capabilities 扁平列表，「成功返回空目录」会被当作
+// 权威空目录导致选择器无模型可选——早期在此返回 {providers: []} 的实现即踩坑（真机复现）。
+// 若未来提供真目录（models 按来源分组 + 真实 contextWindow），可重新入表并恢复 handler。
 
 export async function usageModelPricing(_args: unknown[]) { return {}; }
 export async function apiKeyPresent(_args: unknown[]) { return { present: false }; }
